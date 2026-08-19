@@ -49,7 +49,19 @@ for fn in (grok_bot_list, grok_bot_send, grok_bot_ask, grok_bot_tail):
 
 
 def main() -> None:
-    asyncio.run(server.run_stdio_async())
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="groken-mcp")
+    parser.add_argument("--transport", choices=["stdio", "sse", "http"], default="stdio")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8321)
+    args = parser.parse_args()
+    if args.transport == "stdio":
+        asyncio.run(server.run_stdio_async())
+    elif args.transport == "sse":
+        asyncio.run(server.run_sse_async(host=args.host, port=args.port))
+    else:
+        asyncio.run(server.run_streamable_http_async(host=args.host, port=args.port))
 
 
 if __name__ == "__main__":

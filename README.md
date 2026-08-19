@@ -95,26 +95,28 @@ are upgraded in place via `updateAgent` on next resolution. CLI errors are
 translated to actionable hints by `groken/errors.py`. Design rationale:
 `docs/painpoints-2026-08-19.md`.
 
-## MCP server (for Hermes)
+## MCP server (works with every MCP host)
 
 ```bash
-.venv/bin/groken-mcp      # stdio MCP server
+groken-mcp                                  # stdio (Claude Desktop, Cursor, Zed, Hermes, omo)
+groken-mcp --transport http --port 8321     # streamable HTTP  -> http://127.0.0.1:8321/mcp
+groken-mcp --transport sse  --port 8322     # legacy SSE       -> http://127.0.0.1:8322/sse
 ```
 
-Tools: `grok_bot_list`, `grok_bot_send`, `grok_bot_ask` (send + wait for reply),
-`grok_bot_tail`. All accept a Bot id or its display name.
-
-Hermes MCP config entry:
+All three transports serve the same four tools. stdio config (most hosts):
 
 ```json
-{
-  "mcpServers": {
-    "grok-bot": {
-      "command": "/Users/bob/groken/.venv/bin/groken-mcp"
-    }
-  }
-}
+{ "mcpServers": { "groken": { "command": "/Users/bob/groken/.venv/bin/groken-mcp" } } }
 ```
+
+Remote/containerized hosts that speak streamable HTTP point at `http://<host>:8321/mcp`;
+older SSE-only clients use `http://<host>:8322/sse`. Bind beyond localhost with
+`--host 0.0.0.0` only behind your own auth layer — the server itself is unauthenticated
+and inherits your Grok Bot session.
+
+Tools: `grok_bot_list`, `grok_bot_send`, `grok_bot_ask` (send + wait for reply),
+`grok_bot_tail`. All accept a Bot id or its display name; omit it to use the
+dedicated groken Bot.
 
 ## Tests
 
