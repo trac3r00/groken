@@ -53,6 +53,6 @@ docs/painpoints-2026-08-19.md  # design rationale (researched agent-failure mode
 - Do not "fix" intentional boundary catch-alls (ioreg fallback, webbrowser launch) without reading the WHY comments/tests.
 
 ## NOTES
-- Not a git repo. `.venv` contains a stale `sand_bridge-0.1.0.dist-info` (project's previous name) — harmless.
+- Repo: github.com/trac3r00/groken (private). `.venv` contains a stale `sand_bridge-0.1.0.dist-info` (project's previous name) — harmless.
 - Client version auto-tracks the installed Grok Bot app (`/Applications/Grok Bot.app` Info.plist) — headers must match the app or calls may be gated.
 - Gateway tokens are short-lived; `GatewayManager` re-mints automatically.
