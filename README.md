@@ -95,17 +95,23 @@ are upgraded in place via `updateAgent` on next resolution. CLI errors are
 translated to actionable hints by `groken/errors.py`. Design rationale:
 `docs/painpoints-2026-08-19.md`.
 
-## Install into your AI agents (one command)
+## Install into your AI agents (you choose)
 
 ```bash
+groken install                # interactive: pick from detected agents
+groken install --all          # every detected agent, no prompt
+groken install codex cursor   # exactly these
 groken install --dry-run      # show what would change
-groken install                # install into every detected agent
-groken install codex cursor   # or pick specific ones
+groken uninstall              # same selection UX, removes groken entries
 ```
 
-Registers the MCP server (and copies the skill where the host supports skills),
-merging into existing config — siblings are preserved, re-running is idempotent,
-and every touched file gets a `.groken-bak` copy first.
+Nothing is installed without an explicit choice: bare `groken install` lists the
+detected agents and waits for a selection, and in a non-interactive shell it
+refuses with the detected list instead of guessing. Merges preserve sibling
+servers, re-running is idempotent, and every touched file gets a `.groken-bak`
+copy first.
+
+Run `groken` with no arguments for the first-run guide (login → install → doctor).
 
 | Agent | Surface written |
 |---|---|

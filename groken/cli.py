@@ -28,16 +28,89 @@ def cmd_login() -> None:
     print("Signed in. Tokens saved to ~/.config/groken/tokens.json")
 
 
-def cmd_install(agents: list[str] | None, dry_run: bool) -> None:
-    from .installers import INSTALLERS, install_all
+GUIDE = """groken — talk to Grok Bot cloud agents from your terminal or any AI agent.
 
+First run:
+  groken login              sign in (opens cursor.com in your browser)
+  groken install            pick which AI agents get the groken MCP server
+  groken doctor             verify tokens, sandbox, and your dedicated Bot
+
+Everyday use:
+  groken ask "task"         send a task, wait for the reply
+  groken send "task"        fire-and-forget
+  groken tail               recent conversation
+  groken agents             list your Bots
+
+Run any command with --help for its options."""
+
+
+def _select_agents(candidates: list[str], action: str) -> list[str]:
+    print(f"Detected agents available to {action}:\n")
+    for i, name in enumerate(candidates, 1):
+        print(f"  {i:>2}. {name}")
+    print("\nEnter numbers (e.g. 1 3 5), 'a' for all, or press Enter to cancel.")
+    raw = input("> ").strip()
+    if not raw:
+        return []
+    if raw.lower() in {"a", "all"}:
+        return candidates
+    chosen: list[str] = []
+    for token in raw.replace(",", " ").split():
+        if token.isdigit() and 1 <= int(token) <= len(candidates):
+            chosen.append(candidates[int(token) - 1])
+        elif token in candidates:
+            chosen.append(token)
+        else:
+            sys.exit(f"unrecognized selection: {token}")
+    return chosen
+
+
+def _resolve_selection(agents: list[str], use_all: bool, candidates: list[str], action: str) -> list[str]:
+    if agents:
+        return agents
+    if use_all:
+        return candidates
+    if not sys.stdin.isatty():
+        sys.exit(f"no agents selected. Pass agent names, or --all. Detected: {', '.join(candidates) or 'none'}")
+    if not candidates:
+        sys.exit("no supported AI agents detected on this machine.")
+    return _select_agents(candidates, action)
+
+
+def cmd_install(agents: list[str], dry_run: bool, use_all: bool) -> None:
+    from .installers import detected_agents, install_all
+
+    selection = _resolve_selection(agents, use_all, detected_agents(), "install into")
+    if not selection:
+        print("nothing selected.")
+        return
     try:
-        results = install_all(dry_run=dry_run, only=agents or None)
+        results = install_all(dry_run=dry_run, only=selection)
     except ValueError as e:
         sys.exit(str(e))
-    width = max(len(n) for n in INSTALLERS)
+    width = max(len(n) for n in results)
     for name, outcome in results.items():
-        print(f"{name:<{width}}  {outcome}")
+        mark = "-" if outcome.startswith("skipped") else "+"
+        print(f"{mark} {name:<{width}}  {outcome}")
+    if not dry_run:
+        print("\nRestart the agent app/CLI to pick up the new MCP server.")
+
+
+def cmd_uninstall(agents: list[str], dry_run: bool, use_all: bool) -> None:
+    from .installers import UNINSTALLERS, uninstall_all
+
+    selection = _resolve_selection(agents, use_all, list(UNINSTALLERS), "remove from")
+    if not selection:
+        print("nothing selected.")
+        return
+    try:
+        results = uninstall_all(dry_run=dry_run, only=selection)
+    except ValueError as e:
+        sys.exit(str(e))
+    width = max(len(n) for n in results)
+    for name, outcome in results.items():
+        mark = "-" if outcome.startswith("not present") else "+"
+        print(f"{mark} {name:<{width}}  {outcome}")
 
 
 def cmd_doctor() -> None:
@@ -118,12 +191,17 @@ def _main_impl() -> None:
     p = argparse.ArgumentParser(prog="groken")
     import importlib.metadata
     p.add_argument("--version", action="version", version=f"%(prog)s {importlib.metadata.version('groken')}")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=False)
     sub.add_parser("login")
     sub.add_parser("refresh")
     sub.add_parser("doctor")
     sp = sub.add_parser("install")
     sp.add_argument("agents", nargs="*")
+    sp.add_argument("--all", action="store_true", dest="use_all")
+    sp.add_argument("--dry-run", action="store_true")
+    sp = sub.add_parser("uninstall")
+    sp.add_argument("agents", nargs="*")
+    sp.add_argument("--all", action="store_true", dest="use_all")
     sp.add_argument("--dry-run", action="store_true")
     sub.add_parser("bots")
     sub.add_parser("agents")
@@ -133,11 +211,15 @@ def _main_impl() -> None:
     sp = sub.add_parser("ask"); sp.add_argument("text"); sp.add_argument("agent", nargs="?"); sp.add_argument("--timeout", type=float, default=600)
     sub.add_parser("sandboxes")
     args = p.parse_args()
+    if args.cmd is None:
+        print(GUIDE)
+        return
     {
         "login": cmd_login,
         "refresh": cmd_refresh,
         "doctor": cmd_doctor,
-        "install": lambda: cmd_install(args.agents, args.dry_run),
+        "install": lambda: cmd_install(args.agents, args.dry_run, args.use_all),
+        "uninstall": lambda: cmd_uninstall(args.agents, args.dry_run, args.use_all),
         "bots": cmd_agents,
         "agents": cmd_agents,
         "events": cmd_events,

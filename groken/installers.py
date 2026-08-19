@@ -155,8 +155,57 @@ INSTALLERS: dict[str, tuple[Callable[[], bool], Callable[[bool], str]]] = {
 }
 
 
+def uninstall_json_mcp(path: Path, key: str, dry_run: bool) -> str:
+    if not path.exists():
+        return f"not present (no {path})"
+    try:
+        data = json.loads(path.read_text() or "{}")
+    except ValueError:
+        return f"skipped (unparseable JSON): {path}"
+    section = data.get(key)
+    if not isinstance(section, dict) or SERVER_NAME not in section:
+        return f"not present -> {path}"
+    if dry_run:
+        return f"would remove {key}.{SERVER_NAME} <- {path}"
+    _backup(path)
+    del section[SERVER_NAME]
+    data[key] = section
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    return f"removed <- {path}"
+
+
+def uninstall_toml_mcp(path: Path, dry_run: bool) -> str:
+    header = f"[mcp_servers.{SERVER_NAME}]"
+    if not path.exists():
+        return f"not present (no {path})"
+    text = path.read_text()
+    if header not in text:
+        return f"not present -> {path}"
+    if dry_run:
+        return f"would remove {header} <- {path}"
+    start = text.index(header)
+    rest = text[start + len(header):]
+    next_section = rest.find("\n[")
+    end = len(text) if next_section == -1 else start + len(header) + next_section + 1
+    _backup(path)
+    path.write_text((text[:start] + text[end:]).rstrip("\n") + "\n")
+    return f"removed <- {path}"
+
+
+def uninstall_skill_dir(dest_root: Path, dry_run: bool) -> str:
+    dest = dest_root / SERVER_NAME
+    if not dest.exists():
+        return f"not present -> {dest}"
+    if dry_run:
+        return f"would remove skill <- {dest}"
+    shutil.rmtree(dest)
+    return f"removed <- {dest}"
+
+
 def install_all(dry_run: bool, only: list[str] | None = None) -> dict[str, str]:
-    names = only or list(INSTALLERS)
+    names = list(only) if only is not None else list(INSTALLERS)
+    if not names:
+        raise ValueError("no agents selected")
     unknown = [n for n in names if n not in INSTALLERS]
     if unknown:
         raise ValueError(f"unknown agent(s): {', '.join(unknown)}; known: {', '.join(INSTALLERS)}")
@@ -165,3 +214,42 @@ def install_all(dry_run: bool, only: list[str] | None = None) -> dict[str, str]:
         detect, run = INSTALLERS[name]
         results[name] = run(dry_run) if detect() else "skipped (not installed)"
     return results
+
+
+def detected_agents() -> list[str]:
+    return [name for name, (detect, _) in INSTALLERS.items() if detect()]
+
+
+UNINSTALLERS: dict[str, Callable[[bool], str]] = {
+    "claude-code": lambda dry_run: uninstall_json_mcp(HOME / ".claude.json", "mcpServers", dry_run),
+    "claude-desktop": lambda dry_run: uninstall_json_mcp(
+        HOME / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json", "mcpServers", dry_run
+    ),
+    "cursor": lambda dry_run: uninstall_json_mcp(HOME / ".cursor" / "mcp.json", "mcpServers", dry_run),
+    "windsurf": lambda dry_run: uninstall_json_mcp(
+        HOME / ".codeium" / "windsurf" / "mcp_config.json", "mcpServers", dry_run
+    ),
+    "gemini-cli": lambda dry_run: uninstall_json_mcp(HOME / ".gemini" / "settings.json", "mcpServers", dry_run),
+    "vscode": lambda dry_run: uninstall_json_mcp(
+        HOME / "Library" / "Application Support" / "Code" / "User" / "mcp.json", "servers", dry_run
+    ),
+    "kiro": lambda dry_run: uninstall_json_mcp(HOME / ".kiro" / "settings" / "mcp.json", "mcpServers", dry_run),
+    "opencode": lambda dry_run: uninstall_json_mcp(
+        HOME / ".config" / "opencode" / "opencode.json", "mcp", dry_run
+    ),
+    "codex": lambda dry_run: uninstall_toml_mcp(HOME / ".codex" / "config.toml", dry_run),
+    "omo": lambda dry_run: uninstall_skill_dir(HOME / ".agents" / "skills", dry_run),
+    "claude-skills": lambda dry_run: uninstall_skill_dir(HOME / ".claude" / "skills", dry_run),
+}
+
+
+def uninstall_all(dry_run: bool, only: list[str] | None = None) -> dict[str, str]:
+    names = list(only) if only is not None else list(UNINSTALLERS)
+    if not names:
+        raise ValueError("no agents selected")
+    unknown = [n for n in names if n not in UNINSTALLERS]
+    if unknown:
+        raise ValueError(
+            f"unknown or non-removable agent(s): {', '.join(unknown)}; known: {', '.join(UNINSTALLERS)}"
+        )
+    return {name: UNINSTALLERS[name](dry_run) for name in names}
