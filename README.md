@@ -95,6 +95,34 @@ are upgraded in place via `updateAgent` on next resolution. CLI errors are
 translated to actionable hints by `groken/errors.py`. Design rationale:
 `docs/painpoints-2026-08-19.md`.
 
+## Install into your AI agents (one command)
+
+```bash
+groken install --dry-run      # show what would change
+groken install                # install into every detected agent
+groken install codex cursor   # or pick specific ones
+```
+
+Registers the MCP server (and copies the skill where the host supports skills),
+merging into existing config — siblings are preserved, re-running is idempotent,
+and every touched file gets a `.groken-bak` copy first.
+
+| Agent | Surface written |
+|---|---|
+| Claude Code | `~/.claude.json` mcpServers + `~/.claude/skills/groken/` |
+| Claude Desktop | `claude_desktop_config.json` mcpServers |
+| Codex | `~/.codex/config.toml` `[mcp_servers.groken]` |
+| Cursor | `~/.cursor/mcp.json` |
+| VS Code / Copilot | `Code/User/mcp.json` servers |
+| Gemini CLI | `~/.gemini/settings.json` |
+| OpenCode | `~/.config/opencode/opencode.json` mcp |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| Kiro | `~/.kiro/settings/mcp.json` |
+| Hermes | `~/.hermes/config.yaml` mcp_servers |
+| omo/senpi | `~/.agents/skills/groken/` |
+
+Agents that are not installed are skipped, not errored.
+
 ## MCP server (works with every MCP host)
 
 ```bash

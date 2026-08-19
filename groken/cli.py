@@ -28,6 +28,18 @@ def cmd_login() -> None:
     print("Signed in. Tokens saved to ~/.config/groken/tokens.json")
 
 
+def cmd_install(agents: list[str] | None, dry_run: bool) -> None:
+    from .installers import INSTALLERS, install_all
+
+    try:
+        results = install_all(dry_run=dry_run, only=agents or None)
+    except ValueError as e:
+        sys.exit(str(e))
+    width = max(len(n) for n in INSTALLERS)
+    for name, outcome in results.items():
+        print(f"{name:<{width}}  {outcome}")
+
+
 def cmd_doctor() -> None:
     import importlib.metadata
 
@@ -110,6 +122,9 @@ def _main_impl() -> None:
     sub.add_parser("login")
     sub.add_parser("refresh")
     sub.add_parser("doctor")
+    sp = sub.add_parser("install")
+    sp.add_argument("agents", nargs="*")
+    sp.add_argument("--dry-run", action="store_true")
     sub.add_parser("bots")
     sub.add_parser("agents")
     sub.add_parser("events")
@@ -122,6 +137,7 @@ def _main_impl() -> None:
         "login": cmd_login,
         "refresh": cmd_refresh,
         "doctor": cmd_doctor,
+        "install": lambda: cmd_install(args.agents, args.dry_run),
         "bots": cmd_agents,
         "agents": cmd_agents,
         "events": cmd_events,
