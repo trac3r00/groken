@@ -57,6 +57,35 @@ All CLI/MCP calls default to it; the user's other Bots are never touched unless
 explicitly named. Custom name: `{"bot_name": "..."}` in config.json or
 `GROKEN_BOT_NAME` env.
 
+## What groken connects
+
+```
+your agent/script ── groken (CLI | MCP) ── Grok Bot gateway ── dedicated Bot
+                                                              ├─ cloud VM (terminal / browser / files)
+                                                              ├─ Bot plugins (Slack, GitHub, Notion, Google Drive,
+                                                              │   Composio, Browserbase, AWS Agents, Context7, ...)
+                                                              ├─ routines & schedules (server-side, survives shutdown)
+                                                              └─ your local Mac (via the app's local-exec daemon)
+```
+
+**Agent hosts**
+- Hermes: already registered (`mcp_servers.groken` in `~/.hermes/config.yaml`).
+- omo/senpi: skill installed at `~/.agents/skills/groken` — say "groken으로 위임" to route.
+- Any MCP client (Claude Desktop, Cursor, Zed): add the stdio server
+  `{"mcpServers": {"groken": {"command": "~/groken/.venv/bin/groken-mcp"}}}`.
+
+**Scripts & automation**
+- Shell pipelines: `groken ask "..."` exits 0 with the reply on stdout — composes with
+  `cron`/`launchd`, CI steps, or `xargs` fan-out.
+- Reactive flows: `groken events` streams gateway SSE — pipe into `jq` to trigger on
+  transcript appends or agent state flips.
+
+**Through the Bot (indirect reach)**
+- Anything the Bot's plugins touch (Slack post, GitHub issue, Notion page...) is one
+  `ask` away — the Bot executes with its own logins on the cloud computer.
+- Bot-side routines can fire on Slack/GitHub events and report back into the same
+  conversation groken reads.
+
 ## Guardrails & errors
 
 The dedicated Bot's standing instructions (verify post-action state, never
