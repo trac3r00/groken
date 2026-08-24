@@ -115,6 +115,28 @@ def cmd_uninstall(agents: list[str], dry_run: bool, use_all: bool) -> None:
         print(f"{mark} {name:<{width}}  {outcome}")
 
 
+def cmd_service_install(dry_run: bool) -> None:
+    from .service import install
+
+    results = install(dry_run=dry_run)
+    for name, outcome in results.items():
+        print(f"{name}: {outcome}")
+
+
+def cmd_service_status() -> None:
+    from .service import status
+
+    for name, present in status().items():
+        print(f"{name}: {'installed' if present else 'not installed'}")
+
+
+def cmd_service_uninstall(dry_run: bool) -> None:
+    from .service import uninstall
+
+    for name, outcome in uninstall(dry_run=dry_run).items():
+        print(f"{name}: {outcome}")
+
+
 def cmd_doctor() -> None:
     import importlib.metadata
 
@@ -252,6 +274,13 @@ def _main_impl() -> None:
     sp.add_argument("--full", action="store_true")
     sp = sub.add_parser("ask"); sp.add_argument("text"); sp.add_argument("agent", nargs="?"); sp.add_argument("--timeout", type=float, default=600)
     sub.add_parser("sandboxes")
+    service_parser = sub.add_parser("service", help="manage groken1 launchd services")
+    service_sub = service_parser.add_subparsers(dest="service_cmd", required=True)
+    service_install = service_sub.add_parser("install")
+    service_install.add_argument("--dry-run", action="store_true")
+    service_sub.add_parser("status")
+    service_uninstall = service_sub.add_parser("uninstall")
+    service_uninstall.add_argument("--dry-run", action="store_true")
     sp = sub.add_parser("inspect-app")
     sp.add_argument("--app-path", default=None)
     sp.add_argument("--fail-on-drift", action="store_true")
@@ -273,6 +302,11 @@ def _main_impl() -> None:
         "tail": lambda: cmd_tail(args.agent, args.limit, args.as_json, args.since, args.full),
         "ask": lambda: cmd_gask(args.agent, args.text, args.timeout),
         "sandboxes": cmd_sandboxes,
+        "service": lambda: {
+            "install": lambda: cmd_service_install(args.dry_run),
+            "status": cmd_service_status,
+            "uninstall": lambda: cmd_service_uninstall(args.dry_run),
+        }[args.service_cmd](),
         "inspect-app": lambda: cmd_inspect_app(args.app_path, args.fail_on_drift),
     }[args.cmd]()
 
