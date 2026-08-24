@@ -164,12 +164,25 @@ def cmd_gsend(agent_id: str | None, text: str) -> None:
     print(json.dumps(resp))
 
 
-def cmd_tail(agent_id: str | None) -> None:
+def cmd_tail(agent_id: str | None, limit: int = 15, as_json: bool = False, since: str | None = None, full: bool = False) -> None:
     mgr = _manager()
-    for e in mgr.transcript_tail(mgr.resolve_agent(agent_id))[-15:]:
-        msg = e.get("message") or {}
-        content = msg.get("content") or ""
-        print(f'[{e.get("kind")}] {str(content)[:160]}')
+    entries = mgr.transcript_tail(mgr.resolve_agent(agent_id))
+    if since is not None:
+        for index, entry in enumerate(entries):
+            if entry.get("id") == since:
+                entries = entries[index + 1:]
+                break
+    entries = entries[-limit:] if limit else []
+    structured = [
+        {"id": e.get("id"), "kind": e.get("kind"), "timestampMs": e.get("timestampMs"), "content": e.get("content") or ""}
+        for e in entries
+    ]
+    if as_json:
+        print(json.dumps(structured, ensure_ascii=False))
+        return
+    for e in structured:
+        content = e["content"] if full else str(e["content"])[:160]
+        print(f'[{e["timestampMs"]}] [{e["kind"]}] {content}')
 
 
 def cmd_gask(agent_id: str | None, text: str, timeout: float) -> None:
@@ -197,6 +210,7 @@ def cmd_capabilities() -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+
 def _main_impl() -> None:
     p = argparse.ArgumentParser(prog="groken")
     import importlib.metadata
@@ -218,7 +232,12 @@ def _main_impl() -> None:
     sub.add_parser("capabilities")
     sub.add_parser("events")
     sp = sub.add_parser("send"); sp.add_argument("text"); sp.add_argument("agent", nargs="?")
-    sp = sub.add_parser("tail"); sp.add_argument("agent", nargs="?")
+    sp = sub.add_parser("tail")
+    sp.add_argument("agent", nargs="?")
+    sp.add_argument("-n", "--limit", type=int, default=15)
+    sp.add_argument("--json", action="store_true", dest="as_json")
+    sp.add_argument("--since")
+    sp.add_argument("--full", action="store_true")
     sp = sub.add_parser("ask"); sp.add_argument("text"); sp.add_argument("agent", nargs="?"); sp.add_argument("--timeout", type=float, default=600)
     sub.add_parser("sandboxes")
     args = p.parse_args()
@@ -236,7 +255,7 @@ def _main_impl() -> None:
         "capabilities": cmd_capabilities,
         "events": cmd_events,
         "send": lambda: cmd_gsend(args.agent, args.text),
-        "tail": lambda: cmd_tail(args.agent),
+        "tail": lambda: cmd_tail(args.agent, args.limit, args.as_json, args.since, args.full),
         "ask": lambda: cmd_gask(args.agent, args.text, args.timeout),
         "sandboxes": cmd_sandboxes,
     }[args.cmd]()

@@ -43,14 +43,17 @@ def grok_bot_capabilities(include_commands: bool = False) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def grok_bot_tail(bot: str | None = None) -> str:
-    """Read the recent transcript entries of a Grok Bot conversation. Defaults to the dedicated groken Bot."""
+def grok_bot_tail(bot: str | None = None, limit: int = 15, full: bool = False) -> str:
+    """Read structured recent transcript entries. Defaults to the dedicated groken Bot."""
     mgr = GatewayManager()
-    lines = []
-    for e in mgr.transcript_tail(_resolve(mgr, bot))[-15:]:
-        msg = e.get("message") or {}
-        lines.append(f'[{e.get("kind")}] {str(msg.get("content") or "")[:300]}')
-    return "\n".join(lines)
+    entries = mgr.transcript_tail(_resolve(mgr, bot))[-limit:] if limit else []
+    result = []
+    for e in entries:
+        content = e.get("content") or ""
+        if not full:
+            content = str(content)[:300]
+        result.append({"id": e.get("id"), "kind": e.get("kind"), "timestampMs": e.get("timestampMs"), "content": content})
+    return json.dumps(result, ensure_ascii=False)
 
 
 for fn in (
