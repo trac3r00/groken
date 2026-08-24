@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 
 import groken.gateway as gw_mod
 from groken.gateway import GatewayManager, GatewaySession
@@ -133,3 +134,30 @@ def test_manager_remints_session_on_failure(monkeypatch):
     monkeypatch.setattr(gw_mod, "GatewaySession", lambda **kw: FakeSession(fail=False))
     assert mgr.command("listAgents") == ["ok"]
     assert ensured["n"] == 1
+
+
+def test_ensure_sandbox_refreshes_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(401, text="expired")
+
+    manager = GatewayManager.__new__(GatewayManager)
+    manager.access_token = "expired"
+    manager.machine_id = "machine"
+    manager.client_version = "0.23.0"
+    manager.http = httpx.Client(transport=httpx.MockTransport(handler))
+    manager._session = None
+    monkeypatch.setattr(gw_mod, "load_tokens", lambda: {"refreshToken": "refresh"})
+    monkeypatch.setattr(
+        gw_mod,
+        "refresh_tokens",
+        lambda _token: {"accessToken": "still-invalid", "refreshToken": "refresh"},
+    )
+
+    with pytest.raises(gw_mod.ConnectError, match="unauthorized after refresh"):
+        manager._ensure_sandbox()
+
+    assert requests == 2

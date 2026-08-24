@@ -3,6 +3,7 @@ import json
 
 from mcp.server.mcpserver import MCPServer
 
+from .capabilities import capability_manifest, live_read_only_status
 from .gateway import GatewayManager
 
 server = MCPServer("groken")
@@ -22,7 +23,7 @@ def grok_bot_list() -> str:
 def grok_bot_send(text: str, bot: str | None = None) -> str:
     """Send a message to a Grok Bot without waiting for the reply. Defaults to the dedicated groken Bot (auto-created on first use); pass bot (name or id) only to target a specific other Bot."""
     mgr = GatewayManager()
-    mgr.session().send_prompt(_resolve(mgr, bot), text)
+    mgr.send_prompt(_resolve(mgr, bot), text)
     return "sent"
 
 
@@ -30,21 +31,35 @@ async def grok_bot_ask(text: str, bot: str | None = None, timeout_s: float = 600
     """Send a message to a Grok Bot and return its reply text. Defaults to the dedicated groken Bot (auto-created on first use); pass bot (name or id) only to target a specific other Bot."""
     mgr = GatewayManager()
     agent_id = _resolve(mgr, bot)
-    reply = await asyncio.to_thread(mgr.session().ask, agent_id, text, timeout_s, idle_s)
+    reply = await asyncio.to_thread(mgr.ask, agent_id, text, timeout_s, idle_s)
     return reply or "(no reply text received)"
+
+
+def grok_bot_capabilities(include_commands: bool = False) -> str:
+    """Inspect the official app's typed gateway surface plus safe live feature gates."""
+    manager = GatewayManager()
+    payload = capability_manifest(include_commands=include_commands)
+    payload["live"] = live_read_only_status(manager)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def grok_bot_tail(bot: str | None = None) -> str:
     """Read the recent transcript entries of a Grok Bot conversation. Defaults to the dedicated groken Bot."""
     mgr = GatewayManager()
     lines = []
-    for e in mgr.session().transcript_tail(_resolve(mgr, bot))[-15:]:
+    for e in mgr.transcript_tail(_resolve(mgr, bot))[-15:]:
         msg = e.get("message") or {}
         lines.append(f'[{e.get("kind")}] {str(msg.get("content") or "")[:300]}')
     return "\n".join(lines)
 
 
-for fn in (grok_bot_list, grok_bot_send, grok_bot_ask, grok_bot_tail):
+for fn in (
+    grok_bot_list,
+    grok_bot_send,
+    grok_bot_ask,
+    grok_bot_capabilities,
+    grok_bot_tail,
+):
     server.add_tool(fn)
 
 

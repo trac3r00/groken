@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import os
 import secrets
 import time
 import uuid as uuidlib
@@ -76,8 +77,13 @@ def refresh_tokens(refresh_token: str) -> dict[str, object] | None:
 
 def save_tokens(tokens: dict[str, object]) -> None:
     TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(json.dumps(tokens, indent=2))
-    TOKEN_FILE.chmod(0o600)
+    temporary = TOKEN_FILE.with_suffix(".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        _ = stream.write(json.dumps(tokens, indent=2))
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, TOKEN_FILE)
 
 
 def load_tokens() -> dict[str, object] | None:

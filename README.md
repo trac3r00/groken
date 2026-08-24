@@ -152,6 +152,103 @@ Tools: `grok_bot_list`, `grok_bot_send`, `grok_bot_ask` (send + wait for reply),
 `grok_bot_tail`. All accept a Bot id or its display name; omit it to use the
 dedicated groken Bot.
 
+## Remote OMO worker
+
+The optional worker turns a computer with OMO installed into a narrow HTTP job
+runner. It never exposes a shell endpoint: clients submit an OMO task scoped to
+a relative workspace, poll by job id, and may request a signed completion
+callback.
+
+```bash
+uv pip install -p .venv/bin/python -e ".[worker]"
+export GROKEN_WORKER_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"
+groken-worker --host 127.0.0.1 --port 8765 \
+  --workspace-root /workspace \
+  --omo-command ~/.local/bin/omo
+```
+
+Bootstrap exactly once over an authenticated HTTPS tunnel. The model key and
+worker token are stored in owner-only files; do not send them through Bot chat
+or command-line arguments.
+
+```bash
+curl -X POST https://worker.example.com/v1/bootstrap \
+  -H "X-Bootstrap-Token: $GROKEN_WORKER_BOOTSTRAP_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data @bootstrap.json
+```
+
+Submit work asynchronously and correlate the completion to the originating
+session:
+
+```json
+{
+  "task": "Run the checkout QA suite and report verified results",
+  "workspace": "qa/checkout",
+  "origin_session_id": "session-abc",
+  "callback_url": "https://controller.example.com/v1/callbacks",
+  "callback_token": "a-long-random-bearer-token"
+}
+```
+
+`POST /v1/jobs` returns HTTP 202 and a `job_id`; `GET /v1/jobs/{job_id}` returns
+the durable status record. The local `groken-callback` relay authenticates the
+completion, appends it to an owner-only JSONL ledger, and emits
+`remote.worker.completed` into Clawhip.
+
+Bind both services to loopback. Put them behind a named tunnel or private
+network with its own access policy, use distinct random tokens for worker and
+callback authentication, and rotate the one-time bootstrap token by restarting
+the worker without it after provisioning.
+
+### Direct mode: no Grok Bot in the task path
+
+When inbound tunnels to the sandbox are unavailable, run the controller on the
+origin computer and let `groken-poller` maintain an outbound HTTPS connection.
+The Grok Bot is not messaged or consulted: the remote OMO process leases tasks,
+executes them in `/workspace`, and posts the result directly to the controller.
+
+```text
+origin OMO/Hermes -> local controller <- outbound remote poller -> remote OMO
+```
+
+Start the controller on the origin and expose only that loopback port through a
+private or named HTTPS tunnel:
+
+```bash
+export GROKEN_CONTROLLER_TOKEN="$(openssl rand -hex 32)"
+export GROKEN_ENROLLMENT_TOKEN="$(openssl rand -hex 32)"
+export GROKEN_REMOTE_WORKER_TOKEN="$(openssl rand -hex 32)"
+export GROKEN_MODEL_BASE_URL="https://models.example.com/v1"
+export GROKEN_MODEL_API_KEY="..."
+groken-controller --host 127.0.0.1 --port 18766
+```
+
+Enroll and start the remote worker once:
+
+```bash
+GROKEN_CONTROLLER_URL="https://controller.example.com" \
+GROKEN_ENROLLMENT_TOKEN="..." \
+groken-poller --worker-id groken-box
+```
+
+Enrollment stores the controller token and model configuration in owner-only
+files. Subsequent poller restarts require only the controller URL; job traffic
+uses the worker token. Submit locally with `POST /v1/jobs`, poll
+`GET /v1/jobs/{job_id}`, and receive the Clawhip event
+`remote.worker.completed` when the remote OMO run finishes.
+
+## Capability and operations references
+
+- [`docs/capabilities-0.23.0.md`](docs/capabilities-0.23.0.md) — all 87 typed
+  gateway commands, 20 coordinator commands, risk classes, and verified live
+  read-only observations.
+- [`docs/direct-worker-runbook.md`](docs/direct-worker-runbook.md) — durable
+  leases, idempotent submission/completion, poller recovery, and trust boundary.
+- [`docs/native-operation-plane.md`](docs/native-operation-plane.md) — direct
+  terminal/file APIs, native CLI/MCP usage, proven ExecService metadata, and
+  browser/gateway adapter contracts.
+
 ## Tests
 
 ```bash

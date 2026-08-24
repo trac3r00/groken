@@ -46,6 +46,7 @@ def test_ask_via_events_returns_on_compose_flip():
         {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
             "entry": {"kind": "send-message", "id": "r1", "message": {"type": "text", "content": "pong"}}}},
         {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": False, "isRunning": True}}},
+        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": False, "isRunning": False}}},
     ]
     s = make_session(frames, [])
     orig_sleep = gw_mod.time.sleep
@@ -67,6 +68,7 @@ def test_ask_via_events_ignores_stale_replayed_entries():
             "entry": {"kind": "send-message", "id": "r1", "timestampMs": 9_999_999_999_999,
                       "message": {"type": "text", "content": "fresh pong"}}}},
         {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": False, "isRunning": True}}},
+        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": False, "isRunning": False}}},
     ]
     s = make_session(frames, [])
     orig_sleep = gw_mod.time.sleep
@@ -143,3 +145,60 @@ def test_ask_via_events_ignores_other_agents_and_falls_back_on_sse_failure():
         s.transcript_tail = orig_tail
         s.agent_busy = orig_busy
     assert reply == "via-poll"
+
+
+def test_ask_via_events_waits_until_running_is_false() -> None:
+    frames = [
+        {"channel": "agent-upserted", "payload": {"agent": {
+            "id": "a1", "isComposingMessage": True, "isRunning": True,
+        }}},
+        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
+            "entry": {"kind": "send-message", "id": "r1", "timestampMs": 9_999_999_999_999,
+                      "message": {"content": "partial"}}}},
+        {"channel": "agent-upserted", "payload": {"agent": {
+            "id": "a1", "isComposingMessage": False, "isRunning": True,
+        }}},
+        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
+            "entry": {"kind": "send-message", "id": "r2", "timestampMs": 9_999_999_999_999,
+                      "message": {"content": "final"}}}},
+        {"channel": "agent-upserted", "payload": {"agent": {
+            "id": "a1", "isComposingMessage": False, "isRunning": False,
+        }}},
+    ]
+    session = make_session(frames, [])
+
+    assert session.ask("a1", "q", timeout_s=30) == "partial\nfinal"
+
+
+def test_ask_reuses_nonce_when_events_fall_back_to_poll() -> None:
+    nonces: list[str] = []
+    tails = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal tails
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, content=b"", headers={"content-type": "text/event-stream"})
+        if request.url.path.endswith("/api/sendPrompt"):
+            nonces.append(json.loads(request.content)["clientNonce"])
+            return httpx.Response(200, json={"accepted": True})
+        if request.url.path.endswith("/api/getAgentTranscriptTail"):
+            tails += 1
+            entries = [] if tails == 1 else [
+                {"kind": "send-message", "id": "r1", "message": {"content": "via-poll"}},
+            ]
+            return httpx.Response(200, json={"entries": entries})
+        if request.url.path.endswith("/api/listAgents"):
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    session = make_session([], [])
+    session.http = httpx.Client(transport=httpx.MockTransport(handler))
+    original_sleep = gw_mod.time.sleep
+    gw_mod.time.sleep = lambda _seconds: None
+    try:
+        assert session.ask("a1", "q", timeout_s=30, idle_s=0) == "via-poll"
+    finally:
+        gw_mod.time.sleep = original_sleep
+
+    assert len(nonces) == 2
+    assert len(set(nonces)) == 1

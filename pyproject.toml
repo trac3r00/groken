@@ -7,7 +7,22 @@ dependencies = ["httpx>=0.27"]
 
 [project.scripts]
 groken = "groken.cli:main"
+groken-callback = "groken.callback_main:main"
+groken-controller = "groken.controller_main:main"
 groken-mcp = "groken.mcp_server:main"
+groken-native = "groken.native_cli:main"
+groken-native-mcp = "groken.native_mcp_server:main"
+groken-poller = "groken.poller_main:main"
+groken-worker = "groken.worker_main:main"
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.9"]
+worker = [
+  "anyio>=4.9",
+  "fastapi>=0.116",
+  "pydantic>=2.11",
+  "uvicorn>=0.35",
+]
+
+[tool.setuptools.packages.find]
+include = ["groken*"]

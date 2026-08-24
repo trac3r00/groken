@@ -3,8 +3,14 @@ import sys
 
 import pytest
 
-import groken.cli as cli
-from groken.installers import INSTALLERS, detected_agents, install_all, uninstall_all, uninstall_json_mcp
+from groken import cli
+from groken.installers import (
+    INSTALLERS,
+    detected_agents,
+    install_all,
+    uninstall_all,
+    uninstall_json_mcp,
+)
 
 
 def test_detected_agents_returns_only_present(monkeypatch):

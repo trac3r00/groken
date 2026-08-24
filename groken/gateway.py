@@ -84,17 +84,32 @@ class GatewaySession:
                 return bool(a.get("isComposingMessage") or a.get("isRunning"))
         return None
 
-    def ask(self, agent_id: str, text: str, timeout_s: float = 600, idle_s: float = 45) -> str:
+    def ask(
+        self,
+        agent_id: str,
+        text: str,
+        timeout_s: float = 600,
+        idle_s: float = 45,
+        client_nonce: str | None = None,
+    ) -> str:
+        nonce = client_nonce or str(uuid.uuid4())
         try:
-            return self._ask_via_events(agent_id, text, timeout_s, idle_s)
+            return self._ask_via_events(agent_id, text, timeout_s, idle_s, nonce)
         except (ConnectError, httpx.HTTPError):
-            return self._ask_via_poll(agent_id, text, timeout_s, idle_s)
+            return self._ask_via_poll(agent_id, text, timeout_s, idle_s, nonce)
 
-    def _ask_via_events(self, agent_id: str, text: str, timeout_s: float, idle_s: float) -> str:
+    def _ask_via_events(
+        self,
+        agent_id: str,
+        text: str,
+        timeout_s: float,
+        idle_s: float,
+        client_nonce: str,
+    ) -> str:
         chunks: list[str] = []
         seen_ids: set[str] = set()
-        composing = False
-        saw_composing = False
+        busy = False
+        saw_busy = False
         saw_upsert = False
         deadline = time.monotonic() + timeout_s
         with self.http.stream(
@@ -102,7 +117,7 @@ class GatewaySession:
         ) as r:
             if r.status_code != 200:
                 raise ConnectError(r.status_code, "events stream rejected")
-            self.send_prompt(agent_id, text)
+            self.send_prompt(agent_id, text, client_nonce=client_nonce)
             send_epoch_ms = time.time() * 1000
             last_activity = time.monotonic()
             for line in r.iter_lines():
@@ -136,10 +151,11 @@ class GatewaySession:
                 elif channel == "agent-upserted":
                     agent = payload.get("agent") or {}
                     if agent.get("id") == agent_id:
-                        composing = bool(agent.get("isComposingMessage"))
-                        saw_composing = saw_composing or composing
-                        if not composing and chunks and (saw_composing or saw_upsert):
-                            time.sleep(0.5)
+                        busy = bool(
+                            agent.get("isComposingMessage") or agent.get("isRunning")
+                        )
+                        saw_busy = saw_busy or busy
+                        if not busy and chunks and (saw_busy or saw_upsert):
                             break
                         saw_upsert = True
                 if chunks and time.monotonic() - last_activity > idle_s:
@@ -148,9 +164,16 @@ class GatewaySession:
             raise ConnectError(0, "events stream ended with no reply content")
         return "\n".join(chunks)
 
-    def _ask_via_poll(self, agent_id: str, text: str, timeout_s: float, idle_s: float) -> str:
+    def _ask_via_poll(
+        self,
+        agent_id: str,
+        text: str,
+        timeout_s: float,
+        idle_s: float,
+        client_nonce: str,
+    ) -> str:
         before = {e.get("id") for e in self.transcript_tail(agent_id)}
-        self.send_prompt(agent_id, text)
+        self.send_prompt(agent_id, text, client_nonce=client_nonce)
         chunks: list[str] = []
         deadline = time.monotonic() + timeout_s
         last_activity = time.monotonic()
@@ -196,30 +219,37 @@ class GatewayManager:
         self._session: GatewaySession | None = None
 
     def _ensure_sandbox(self) -> dict[str, Any]:
-        r = self.http.post(
-            f"{BACKEND_URL}/{GROK_BOT}/EnsureSandBox",
-            headers={
-                "authorization": f"Bearer {self.access_token}",
-                "x-cursor-checksum": create_cursor_checksum(self.machine_id),
-                "x-cursor-client-type": "sand",
-                "x-cursor-client-version": self.client_version,
-                "x-sand-box-namespace": "prod",
-                "x-ghost-mode": "false",
-                "x-request-id": str(uuid.uuid4()),
-                "connect-protocol-version": "1",
-                "content-type": "application/json",
-            },
-            json={},
-        )
-        if r.status_code == 401:
-            tokens = load_tokens() or {}
-            fresh = refresh_tokens(str(tokens.get("refreshToken", "")))
-            if fresh and "accessToken" in fresh:
-                self.access_token = str(fresh["accessToken"])
-                return self._ensure_sandbox()
-        if r.status_code != 200:
-            raise ConnectError(r.status_code, r.text)
-        return r.json()
+        for attempt in range(2):
+            r = self.http.post(
+                f"{BACKEND_URL}/{GROK_BOT}/EnsureSandBox",
+                headers={
+                    "authorization": f"Bearer {self.access_token}",
+                    "x-cursor-checksum": create_cursor_checksum(self.machine_id),
+                    "x-cursor-client-type": "sand",
+                    "x-cursor-client-version": self.client_version,
+                    "x-sand-box-namespace": "prod",
+                    "x-ghost-mode": "false",
+                    "x-request-id": str(uuid.uuid4()),
+                    "connect-protocol-version": "1",
+                    "content-type": "application/json",
+                },
+                json={},
+            )
+            if r.status_code == 401 and attempt == 0:
+                tokens = load_tokens() or {}
+                fresh = refresh_tokens(str(tokens.get("refreshToken", "")))
+                if fresh and "accessToken" in fresh:
+                    self.access_token = str(fresh["accessToken"])
+                    continue
+            if r.status_code != 200:
+                message = (
+                    "unauthorized after refresh"
+                    if r.status_code == 401 and attempt == 1
+                    else r.text
+                )
+                raise ConnectError(r.status_code, message)
+            return r.json()
+        raise ConnectError(401, "unauthorized after refresh")
 
     def session(self, force: bool = False) -> GatewaySession:
         if self._session is None or force:
@@ -232,11 +262,65 @@ class GatewayManager:
             )
         return self._session
 
+    @staticmethod
+    def _should_remint(error: BaseException) -> bool:
+        if isinstance(error, ConnectError):
+            return error.status in {0, 401, 403, 404, 408, 429, 502, 503, 504}
+        return isinstance(error, (httpx.TransportError, httpx.TimeoutException))
+
     def command(self, method: str, args: dict[str, Any] | None = None) -> Any:
         try:
             return self.session().command(method, args)
-        except (ConnectError, httpx.HTTPError):
+        except (ConnectError, httpx.HTTPError) as error:
+            if not self._should_remint(error):
+                raise
             return self.session(force=True).command(method, args)
+
+    def send_prompt(
+        self,
+        agent_id: str,
+        text: str,
+        client_nonce: str | None = None,
+    ) -> dict[str, Any]:
+        nonce = client_nonce or str(uuid.uuid4())
+        try:
+            return self.session().send_prompt(agent_id, text, nonce)
+        except (ConnectError, httpx.HTTPError) as error:
+            if not self._should_remint(error):
+                raise
+            return self.session(force=True).send_prompt(agent_id, text, nonce)
+
+    def transcript_tail(self, agent_id: str) -> list[dict[str, Any]]:
+        try:
+            return self.session().transcript_tail(agent_id)
+        except (ConnectError, httpx.HTTPError) as error:
+            if not self._should_remint(error):
+                raise
+            return self.session(force=True).transcript_tail(agent_id)
+
+    def ask(
+        self,
+        agent_id: str,
+        text: str,
+        timeout_s: float = 600,
+        idle_s: float = 45,
+    ) -> str:
+        nonce = str(uuid.uuid4())
+        try:
+            return self.session().ask(agent_id, text, timeout_s, idle_s, nonce)
+        except (ConnectError, httpx.HTTPError) as error:
+            if not self._should_remint(error):
+                raise
+            return self.session(force=True).ask(agent_id, text, timeout_s, idle_s, nonce)
+
+    def events(self, channels: list[str] | None = None) -> Iterator[dict[str, Any]]:
+        for attempt in range(2):
+            try:
+                yield from self.session(force=attempt > 0).events(channels)
+                return
+            except (ConnectError, httpx.HTTPError) as error:
+                if attempt == 1 or not self._should_remint(error):
+                    raise
 
     def resolve_agent(self, bot: str | None = None) -> str:
         if bot:

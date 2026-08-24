@@ -35,13 +35,16 @@ def get_machine_id() -> str:
     try:
         out = subprocess.run(
             ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-            capture_output=True, text=True, timeout=5, check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
         ).stdout
-        for line in out.splitlines():
-            if "IOPlatformUUID" in line:
-                return line.split('"')[-2].strip()
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    for line in out.splitlines():
+        if "IOPlatformUUID" in line:
+            return line.split('"')[-2].strip()
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     if _MACHINE_ID_FILE.exists():
         return _MACHINE_ID_FILE.read_text().strip()

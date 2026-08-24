@@ -1,5 +1,8 @@
 import base64
 import hashlib
+import os
+
+import pytest
 
 from groken import auth
 
@@ -116,3 +119,21 @@ def test_refresh_failure_returns_none(tmp_path, monkeypatch):
 
     monkeypatch.setattr(auth.httpx, "post", lambda *a, **k: FakeResponse())
     assert auth.refresh_tokens("rt") is None
+
+
+def test_save_tokens_is_atomic_and_temp_file_is_private(tmp_path, monkeypatch):
+    token_file = tmp_path / "tokens.json"
+    monkeypatch.setattr(auth, "TOKEN_FILE", token_file)
+    auth.save_tokens({"accessToken": "old", "refreshToken": "r"})
+
+    def fail_replace(_source, _destination):
+        raise OSError("simulated crash before replace")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated crash"):
+        auth.save_tokens({"accessToken": "new", "refreshToken": "r2"})
+
+    assert auth.load_tokens() == {"accessToken": "old", "refreshToken": "r"}
+    temporary = token_file.with_suffix(".tmp")
+    assert temporary.is_file()
+    assert temporary.stat().st_mode & 0o777 == 0o600

@@ -1,6 +1,6 @@
 import sys
 
-import groken.cli as cli
+from groken import cli
 
 
 def test_cli_friendly_error_on_connect_error(monkeypatch, capsys):

@@ -40,6 +40,7 @@ Everyday use:
   groken send "task"        fire-and-forget
   groken tail               recent conversation
   groken agents             list your Bots
+  groken capabilities       official gateway inventory + safe live status
 
 Run any command with --help for its options."""
 
@@ -137,7 +138,7 @@ def cmd_doctor() -> None:
             print(f"agents: {len(agents)} visible")
             own = mgr.own_agent_id()
             print(f"own bot ({bot_name()}): {own}" + (" (cached)" if cached_bot_id() == own else ""))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - doctor reports all startup failures
             ok = False
             print(f"sandbox/agents: FAIL — {e}")
     sys.exit(0 if ok else 1)
@@ -159,13 +160,13 @@ def cmd_agents() -> None:
 
 def cmd_gsend(agent_id: str | None, text: str) -> None:
     mgr = _manager()
-    resp = mgr.session().send_prompt(mgr.resolve_agent(agent_id), text)
+    resp = mgr.send_prompt(mgr.resolve_agent(agent_id), text)
     print(json.dumps(resp))
 
 
 def cmd_tail(agent_id: str | None) -> None:
     mgr = _manager()
-    for e in mgr.session().transcript_tail(mgr.resolve_agent(agent_id))[-15:]:
+    for e in mgr.transcript_tail(mgr.resolve_agent(agent_id))[-15:]:
         msg = e.get("message") or {}
         content = msg.get("content") or ""
         print(f'[{e.get("kind")}] {str(content)[:160]}')
@@ -173,18 +174,27 @@ def cmd_tail(agent_id: str | None) -> None:
 
 def cmd_gask(agent_id: str | None, text: str, timeout: float) -> None:
     mgr = _manager()
-    print(mgr.session().ask(mgr.resolve_agent(agent_id), text, timeout_s=timeout))
+    print(mgr.ask(mgr.resolve_agent(agent_id), text, timeout_s=timeout))
 
 
 def cmd_events() -> None:
     mgr = _manager()
-    for ev in mgr.session().events():
+    for ev in mgr.events():
         print(json.dumps(ev, ensure_ascii=False)[:300])
 
 
 def cmd_sandboxes() -> None:
     client = SandClient()
     print(json.dumps(client.list_sandboxes(), indent=2)[:4000])
+
+
+def cmd_capabilities() -> None:
+    from .capabilities import capability_manifest, live_read_only_status
+
+    manager = _manager()
+    payload = capability_manifest()
+    payload["live"] = live_read_only_status(manager)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def _main_impl() -> None:
@@ -205,6 +215,7 @@ def _main_impl() -> None:
     sp.add_argument("--dry-run", action="store_true")
     sub.add_parser("bots")
     sub.add_parser("agents")
+    sub.add_parser("capabilities")
     sub.add_parser("events")
     sp = sub.add_parser("send"); sp.add_argument("text"); sp.add_argument("agent", nargs="?")
     sp = sub.add_parser("tail"); sp.add_argument("agent", nargs="?")
@@ -222,6 +233,7 @@ def _main_impl() -> None:
         "uninstall": lambda: cmd_uninstall(args.agents, args.dry_run, args.use_all),
         "bots": cmd_agents,
         "agents": cmd_agents,
+        "capabilities": cmd_capabilities,
         "events": cmd_events,
         "send": lambda: cmd_gsend(args.agent, args.text),
         "tail": lambda: cmd_tail(args.agent),
