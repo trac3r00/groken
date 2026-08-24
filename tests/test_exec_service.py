@@ -36,6 +36,34 @@ def test_exec_connect_request_and_split_response():
     assert json.loads(seen[0].content[5:]) ["shell_args"]["command"] == "printf ok"
 
 
+def test_camel_case_live_response_and_stream_close():
+    live_stdout = "Linux cursor 6.12.94+ #1 SMP PREEMPT_DYNAMIC Tue Jul 28 22:00:48 UTC 2026 x86_64 GNU/Linux\\n"
+
+    async def handler(request):
+        return httpx.Response(200, content=(
+            frame({"execClientMessage": {"id": 1, "shellResult": {"success": {
+                "command": "uname -a", "workingDirectory": "/workspace", "stdout": live_stdout,
+            }}}})
+            + frame({"execClientControlMessage": {"streamClose": {"id": 1}}})
+            + frame({"execClientMessage": {"shellResult": {"failure": {"exit_code": 1, "stderr": "nope"}}}})
+        ))
+
+    client = ExecServiceClient(Manager(), http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    assert asyncio.run(client.execute("uname -a")) == ExecResult(live_stdout, "nope")
+
+
+def test_malformed_or_failure_envelopes_fail_closed():
+    async def handler(request):
+        return httpx.Response(200, content=(
+            frame({"exec_client_message": {"shell_result": {"success": {"stdout": "bad"}}},
+                   "execClientMessage": {"shellResult": {"success": {"stdout": "bad2"}}}})
+            + frame({})
+        ))
+
+    client = ExecServiceClient(Manager(), http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    assert asyncio.run(client._call("https://exec.test", "nt", {}, b"")) == (ExecResult("", ""), False)
+
+
 def test_truncated_response_is_protocol_error():
     async def handler(request):
         return httpx.Response(200, content=struct.pack(">BI", 0, 20) + b"{}");

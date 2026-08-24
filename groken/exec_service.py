@@ -126,9 +126,21 @@ class ExecServiceClient:
                         if error: raise ExecRemoteError("remote execution failed")
                     else:
                         seen = True
-                        msg = data.get("exec_client_message", {}).get("shell_result", {})
-                        if "success" in msg: stdout += str(msg["success"].get("stdout", ""))
-                        elif "failure" in msg: stderr += str(msg["failure"].get("stderr", "")); return ExecResult(stdout, stderr), False
+                        msg = None
+                        if isinstance(data, dict):
+                            envelopes = [
+                                data.get("exec_client_message", {}).get("shell_result")
+                                if isinstance(data.get("exec_client_message"), dict) else None,
+                                data.get("execClientMessage", {}).get("shellResult")
+                                if isinstance(data.get("execClientMessage"), dict) else None,
+                            ]
+                            if sum(value is not None for value in envelopes) == 1:
+                                msg = next(value for value in envelopes if value is not None)
+                        if isinstance(msg, dict):
+                            if "success" in msg and isinstance(msg["success"], dict):
+                                stdout += str(msg["success"].get("stdout", ""))
+                            elif "failure" in msg and isinstance(msg["failure"], dict):
+                                stderr += str(msg["failure"].get("stderr", "")); return ExecResult(stdout, stderr), False
                         if len(stdout) + len(stderr) > 10 * 1024 * 1024: raise ExecProtocolError("output too large")
             if buf: raise ExecProtocolError("truncated response frame")
         return ExecResult(stdout, stderr), False
