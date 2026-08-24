@@ -1,10 +1,12 @@
 import argparse
+import asyncio
 import json
 import sys
 import webbrowser
 
 from .auth import load_tokens, poll_for_tokens, refresh_tokens, start_login
 from .client import SandClient
+from .exec_service import ExecServiceClient, ExecServiceError
 
 
 def _manager():
@@ -224,6 +226,20 @@ def cmd_sandboxes() -> None:
     print(json.dumps(client.list_sandboxes(), indent=2)[:4000])
 
 
+def cmd_exec(command: str, cwd: str, timeout_ms: int) -> None:
+    if not command.strip():
+        print("exec: command must not be empty", file=sys.stderr)
+        sys.exit(1)
+    try:
+        result = asyncio.run(ExecServiceClient().execute(command, cwd, timeout_ms))
+    except ExecServiceError as exc:
+        print(f"exec: {exc}", file=sys.stderr)
+        sys.exit(1)
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    sys.exit(1 if result.stderr else 0)
+
+
 def cmd_capabilities() -> None:
     from .capabilities import capability_manifest, live_read_only_status
 
@@ -274,6 +290,10 @@ def _main_impl() -> None:
     sp.add_argument("--full", action="store_true")
     sp = sub.add_parser("ask"); sp.add_argument("text"); sp.add_argument("agent", nargs="?"); sp.add_argument("--timeout", type=float, default=600)
     sub.add_parser("sandboxes")
+    sp = sub.add_parser("exec")
+    sp.add_argument("command")
+    sp.add_argument("--cwd", default="/workspace")
+    sp.add_argument("--timeout-ms", type=int, default=15000)
     service_parser = sub.add_parser("service", help="manage groken1 launchd services")
     service_sub = service_parser.add_subparsers(dest="service_cmd", required=True)
     service_install = service_sub.add_parser("install")
@@ -302,6 +322,7 @@ def _main_impl() -> None:
         "tail": lambda: cmd_tail(args.agent, args.limit, args.as_json, args.since, args.full),
         "ask": lambda: cmd_gask(args.agent, args.text, args.timeout),
         "sandboxes": cmd_sandboxes,
+        "exec": lambda: cmd_exec(args.command, args.cwd, args.timeout_ms),
         "service": lambda: {
             "install": lambda: cmd_service_install(args.dry_run),
             "status": cmd_service_status,
