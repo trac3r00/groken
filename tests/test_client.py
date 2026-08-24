@@ -3,6 +3,7 @@ import json
 import httpx
 
 import groken.client as client_mod
+from groken import config
 from groken.client import SandClient
 
 
@@ -66,6 +67,7 @@ def test_detect_client_version_override(monkeypatch):
 def test_detect_client_version_falls_back_on_unreadable_plist(monkeypatch, tmp_path):
     monkeypatch.delenv("SAND_CLIENT_VERSION", raising=False)
     monkeypatch.setattr(client_mod, "APP_PATH", tmp_path / "missing.plist")
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     assert client_mod.detect_client_version() == "0.20.0"
 
 
@@ -74,6 +76,7 @@ def test_detect_client_version_falls_back_on_malformed_plist(monkeypatch, tmp_pa
     bad = tmp_path / "Info.plist"
     bad.write_bytes(b"not a plist at all")
     monkeypatch.setattr(client_mod, "APP_PATH", bad)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     assert client_mod.detect_client_version() == "0.20.0"
 
 
@@ -84,4 +87,16 @@ def test_detect_client_version_reads_plist(monkeypatch, tmp_path):
     good = tmp_path / "Info.plist"
     good.write_bytes(plistlib.dumps({"CFBundleShortVersionString": "1.2.3"}))
     monkeypatch.setattr(client_mod, "APP_PATH", good)
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     assert client_mod.detect_client_version() == "1.2.3"
+    assert json.loads((tmp_path / "config.json").read_text())["client_version"] == "1.2.3"
+
+
+def test_detect_client_version_uses_cached_version_with_warning(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("SAND_CLIENT_VERSION", raising=False)
+    monkeypatch.setattr(client_mod, "APP_PATH", tmp_path / "missing.plist")
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    config.save_config({"client_version": "7.8.9"})
+
+    assert client_mod.detect_client_version() == "7.8.9"
+    assert "using cached client version" in capsys.readouterr().err

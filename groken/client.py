@@ -1,5 +1,6 @@
 import os
 import plistlib
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ import httpx
 
 from .auth import get_access_token, load_tokens, refresh_tokens
 from .checksum import create_cursor_checksum, get_machine_id
+from .config import load_config, save_config
 
 BACKEND_URL = os.environ.get("SAND_BACKEND_URL", "https://api2.cursor.sh").rstrip("/")
 CLIENT_TYPE = "sand"
@@ -23,9 +25,20 @@ def detect_client_version() -> str:
         plist = plistlib.loads(APP_PATH.read_bytes())
         version = plist.get("CFBundleShortVersionString")
         if isinstance(version, str) and version:
+            cfg = load_config()
+            cfg["client_version"] = version
+            save_config(cfg)
             return version
     except (OSError, ValueError, ExpatError):
         pass
+
+    try:
+        cached = load_config().get("client_version")
+    except (OSError, ValueError):
+        cached = None
+    if isinstance(cached, str) and cached:
+        print("Cursor app not found; using cached client version", file=sys.stderr)
+        return cached
     return "0.20.0"
 
 GROK_BOT = "aiserver.v1.GrokBotService"
