@@ -210,9 +210,18 @@ def cmd_tail(agent_id: str | None, limit: int = 15, as_json: bool = False, since
         print(f'[{e["timestampMs"]}] [{e["kind"]}] {content}')
 
 
-def cmd_gask(agent_id: str | None, text: str, timeout: float) -> None:
+def cmd_gask(agent_id: str | None, text: str, timeout: float, stream: bool = False) -> None:
     mgr = _manager()
-    print(mgr.ask(mgr.resolve_agent(agent_id), text, timeout_s=timeout))
+    resolved = mgr.resolve_agent(agent_id)
+    if not stream or not sys.stdout.isatty() or not hasattr(mgr, "ask_stream"):
+        print(mgr.ask(resolved, text, timeout_s=timeout))
+        return
+
+    def emit(chunk: str) -> None:
+        sys.stdout.write(chunk)
+        sys.stdout.flush()
+
+    mgr.ask_stream(resolved, text, timeout_s=timeout, on_chunk=emit)
 
 
 def cmd_events() -> None:
@@ -288,7 +297,7 @@ def _main_impl() -> None:
     sp.add_argument("--json", action="store_true", dest="as_json")
     sp.add_argument("--since")
     sp.add_argument("--full", action="store_true")
-    sp = sub.add_parser("ask"); sp.add_argument("text"); sp.add_argument("agent", nargs="?"); sp.add_argument("--timeout", type=float, default=600)
+    sp = sub.add_parser("ask"); sp.add_argument("text"); sp.add_argument("agent", nargs="?"); sp.add_argument("--timeout", type=float, default=600); sp.add_argument("--stream", action="store_true")
     sub.add_parser("sandboxes")
     sp = sub.add_parser("exec")
     sp.add_argument("command")
@@ -320,7 +329,7 @@ def _main_impl() -> None:
         "events": cmd_events,
         "send": lambda: cmd_gsend(args.agent, args.text),
         "tail": lambda: cmd_tail(args.agent, args.limit, args.as_json, args.since, args.full),
-        "ask": lambda: cmd_gask(args.agent, args.text, args.timeout),
+        "ask": lambda: cmd_gask(args.agent, args.text, args.timeout, args.stream),
         "sandboxes": cmd_sandboxes,
         "exec": lambda: cmd_exec(args.command, args.cwd, args.timeout_ms),
         "service": lambda: {
