@@ -251,6 +251,14 @@ class GatewayManager:
             return r.json()
         raise ConnectError(401, "unauthorized after refresh")
 
+    def ensure_sandbox_metadata(self) -> dict[str, Any]:
+        metadata = self._ensure_sandbox()
+        required = {"execDaemonUrl", "networkToken", "execDaemonAuthToken", "podId"}
+        missing = required - metadata.keys() if isinstance(metadata, dict) else required
+        if missing:
+            raise ConnectError(0, f"missing sandbox metadata: {', '.join(sorted(missing))}")
+        return metadata
+
     def session(self, force: bool = False) -> GatewaySession:
         if self._session is None or force:
             box = self._ensure_sandbox()

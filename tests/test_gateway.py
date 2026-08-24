@@ -136,6 +136,30 @@ def test_manager_remints_session_on_failure(monkeypatch):
     assert ensured["n"] == 1
 
 
+def test_ensure_sandbox_metadata_delegates_once_and_validates(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    metadata = {
+        "execDaemonUrl": "https://exec.example",
+        "networkToken": "network-token",
+        "execDaemonAuthToken": "auth-token",
+        "podId": "pod-1",
+    }
+    manager = GatewayManager.__new__(GatewayManager)
+
+    def fake_ensure() -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return metadata
+
+    monkeypatch.setattr(manager, "_ensure_sandbox", fake_ensure)
+    assert manager.ensure_sandbox_metadata() == metadata
+    assert calls == 1
+
+    monkeypatch.setattr(manager, "_ensure_sandbox", lambda: {"podId": "pod-1"})
+    with pytest.raises(gw_mod.ConnectError, match="missing sandbox metadata"):
+        manager.ensure_sandbox_metadata()
+
+
 def test_ensure_sandbox_refreshes_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
     requests = 0
 
