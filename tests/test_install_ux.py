@@ -8,8 +8,8 @@ from groken.installers import (
     INSTALLERS,
     detected_agents,
     install_all,
-    uninstall_all,
     install_json_mcp,
+    uninstall_all,
     uninstall_json_mcp,
 )
 

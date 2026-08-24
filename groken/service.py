@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 import plistlib
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 CONTROLLER_WRAPPER = '''#!/bin/sh
 set -a

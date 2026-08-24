@@ -1,4 +1,3 @@
-import pytest
 
 from groken import doctor
 
@@ -35,7 +34,7 @@ def test_all_tiers_pass_and_never_leak_secrets(monkeypatch, capsys):
 
 def test_missing_tokens_is_hard_failure(monkeypatch):
     monkeypatch.setattr(doctor, "load_tokens", lambda: None)
-    monkeypatch.setattr(doctor, "load_config", lambda: {})
+    monkeypatch.setattr(doctor, "load_config", dict)
     monkeypatch.setattr(doctor, "GatewayManager", lambda: (_ for _ in ()).throw(RuntimeError()))
     monkeypatch.setattr(doctor.subprocess, "run", lambda *a, **kw: type("R", (), {"returncode": 1, "stdout": ""})())
     assert doctor.run_doctor() == 1
@@ -62,7 +61,7 @@ def test_controller_down_and_pod_change_are_soft(monkeypatch, capsys):
 
 def test_mcp_probe_is_bounded(monkeypatch):
     monkeypatch.setattr(doctor, "load_tokens", lambda: {"accessToken": "secret"})
-    monkeypatch.setattr(doctor, "load_config", lambda: {})
+    monkeypatch.setattr(doctor, "load_config", dict)
     monkeypatch.setattr(doctor, "GatewayManager", lambda: (_ for _ in ()).throw(RuntimeError()))
     def hanging(*args, **kwargs):
         assert kwargs["timeout"] == 5

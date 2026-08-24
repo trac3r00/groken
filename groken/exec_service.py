@@ -5,7 +5,7 @@ import struct
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 

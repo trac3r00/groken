@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -24,7 +24,7 @@ def _expiry(tokens: dict[str, Any]) -> str:
         return "expiry unknown"
     try:
         if isinstance(value, str):
-            when = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            when = datetime.fromisoformat(value).timestamp()
         elif float(value) < 10_000_000_000:
             when = time.time() + float(value)
         else:
@@ -51,7 +51,7 @@ def run_doctor() -> int:
         agents = manager.command("listAgents")
         _say("2 gateway", f"ok ({len(agents)} agents)")
         gateway_ok = True
-    except Exception as exc:  # diagnostic must continue through soft tiers
+    except Exception:  # noqa: BLE001 - diagnostic must continue through soft tiers
         _say("2 gateway", "FAIL (gateway unavailable)", warning=True)
 
     try:
@@ -59,7 +59,7 @@ def run_doctor() -> int:
             response = client.get("http://127.0.0.1:18766/healthz")
             response.raise_for_status()
         _say("3 controller", "healthz ok")
-    except Exception:
+    except Exception:  # noqa: BLE001
         _say("3 controller", "down (skipped)", warning=True)
 
     cfg = load_config()
@@ -72,7 +72,7 @@ def run_doctor() -> int:
                 response = client.get(str(model_url).rstrip("/") + "/models", headers=headers)
                 response.raise_for_status()
             _say("4 model", "authenticated ping ok")
-        except Exception:
+        except Exception:  # noqa: BLE001
             _say("4 model", "authenticated ping failed", warning=True)
     else:
         _say("4 model", "not configured", warning=True)
@@ -83,7 +83,7 @@ def run_doctor() -> int:
                 response = client.head(str(metadata["execDaemonUrl"]), headers={"authorization": "Bearer [redacted]"})
                 response.raise_for_status()
             _say("5 execDaemon", "HEAD ok")
-        except Exception:
+        except Exception:  # noqa: BLE001
             _say("5 execDaemon", "HEAD failed", warning=True)
     else:
         _say("5 execDaemon", "metadata unavailable", warning=True)
@@ -103,6 +103,6 @@ def run_doctor() -> int:
             _say("7 MCP", "self-handshake ok")
         else:
             raise RuntimeError("no valid response")
-    except Exception:
+    except Exception:  # noqa: BLE001
         _say("7 MCP", "self-handshake failed", warning=True)
     return 0 if token_ok and gateway_ok else 1

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 import shlex
-
+from dataclasses import dataclass
 
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 _PLACEHOLDER_PREFIX = "\x07GROKEN_SUB_"

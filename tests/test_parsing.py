@@ -2,7 +2,6 @@ import pytest
 
 from groken.parsing import build_parsing_result
 
-
 ARG = "ARG"
 
 

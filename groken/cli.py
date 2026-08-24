@@ -96,9 +96,8 @@ def cmd_vnc(open_browser: bool) -> None:
 
 
 def cmd_install(agents: list[str], dry_run: bool, use_all: bool) -> None:
-    from .installers import detected_agents, install_all
-
     from .config import load_config, set_vnc_enabled
+    from .installers import detected_agents, install_all
     if not dry_run and "vnc" not in load_config() and sys.stdin.isatty():
         answer = input("Enable groken vnc? [y/N] ").strip().lower()
         set_vnc_enabled(answer in {"y", "yes"})

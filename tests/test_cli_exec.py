@@ -1,5 +1,6 @@
 import sys
 from dataclasses import dataclass
+from typing import ClassVar
 
 import pytest
 
@@ -15,7 +16,7 @@ class FakeResult:
 
 class FakeClient:
     result = FakeResult("out\n", "err\n")
-    calls = []
+    calls: ClassVar[list] = []
 
     def __init__(self):
         pass

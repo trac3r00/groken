@@ -5,7 +5,7 @@ import struct
 import httpx
 import pytest
 
-from groken.exec_service import ExecResult, ExecServiceClient, ExecProtocolError
+from groken.exec_service import ExecProtocolError, ExecResult, ExecServiceClient
 
 
 class Manager:

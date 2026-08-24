@@ -6,10 +6,9 @@ import json
 import httpx
 from mcp.server.mcpserver import MCPServer
 
+from .capabilities import capability_manifest, live_read_only_status
 from .client import ConnectError
 from .errors import explain_error
-
-from .capabilities import capability_manifest, live_read_only_status
 from .gateway import GatewayManager
 
 server = MCPServer("groken")

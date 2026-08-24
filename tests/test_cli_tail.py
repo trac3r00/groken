@@ -1,8 +1,7 @@
 import json
 
-import groken.cli as cli
 import groken.mcp_server as mcp
-
+from groken import cli
 
 ENTRIES = [
     {"id": "one", "kind": "user", "timestampMs": 100, "content": "a"},
