@@ -1,6 +1,9 @@
 import asyncio
 import base64
+import json
 from typing import Literal, cast
+
+ExecServiceClient = None
 
 from mcp.server.mcpserver import MCPServer
 
@@ -236,6 +239,20 @@ def native_process_kill(
     )
 
 
+async def direct_cloud_exec(command: str) -> str:
+    """Execute a command directly, bypassing the durable queue."""
+    global ExecServiceClient
+    if ExecServiceClient is None:
+        from .exec_service import ExecServiceClient as client_type
+
+        ExecServiceClient = client_type
+    client = ExecServiceClient()
+    result = await client.execute(command)
+    stdout = result.stdout
+    stderr = result.stderr
+    return json.dumps({"stdout": stdout, "stderr": stderr})
+
+
 def native_operation_get(operation_id: str) -> str:
     """Read a native operation's durable status and structured result."""
     client = NativeControllerClient()
@@ -256,6 +273,7 @@ for function in (
     native_process_list,
     native_process_kill,
     native_operation_get,
+    direct_cloud_exec,
 ):
     server.add_tool(function)
 
