@@ -19,6 +19,17 @@ def save_config(cfg: dict[str, object]) -> None:
     CONFIG_FILE.chmod(0o600)
 
 
+def vnc_enabled() -> bool:
+    value = load_config().get("vnc")
+    return isinstance(value, dict) and value.get("enabled") is True
+
+
+def set_vnc_enabled(enabled: bool) -> None:
+    cfg = load_config()
+    cfg["vnc"] = {"enabled": bool(enabled)}
+    save_config(cfg)
+
+
 def bot_name() -> str:
     return os.environ.get("GROKEN_BOT_NAME") or str(load_config().get("bot_name") or DEFAULT_BOT_NAME)
 

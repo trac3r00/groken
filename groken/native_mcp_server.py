@@ -7,6 +7,7 @@ ExecServiceClient = None
 
 from mcp.server.mcpserver import MCPServer
 
+from .config import vnc_enabled
 from .native_client import NativeControllerClient
 from .native_models import (
     FileDelete,
@@ -253,6 +254,13 @@ async def direct_cloud_exec(command: str) -> str:
     return json.dumps({"stdout": stdout, "stderr": stderr})
 
 
+def native_vnc_url() -> str:
+    """Mint the current sandbox's noVNC URL when the capability is enabled."""
+    from .gateway import GatewayManager
+    from .vnc import vnc_url
+    return vnc_url(GatewayManager().ensure_sandbox_metadata())
+
+
 def native_operation_get(operation_id: str) -> str:
     """Read a native operation's durable status and structured result."""
     client = NativeControllerClient()
@@ -262,7 +270,7 @@ def native_operation_get(operation_id: str) -> str:
         client.close()
 
 
-for function in (
+_tools = (
     native_terminal_exec,
     native_terminal_shell,
     native_file_read,
@@ -274,8 +282,11 @@ for function in (
     native_process_kill,
     native_operation_get,
     direct_cloud_exec,
-):
+)
+for function in _tools:
     server.add_tool(function)
+if vnc_enabled():
+    server.add_tool(native_vnc_url)
 
 
 def main() -> None:

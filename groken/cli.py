@@ -81,9 +81,27 @@ def _resolve_selection(agents: list[str], use_all: bool, candidates: list[str], 
     return _select_agents(candidates, action)
 
 
+def cmd_vnc(open_browser: bool) -> None:
+    from .vnc import vnc_url
+    try:
+        url = vnc_url(_manager().ensure_sandbox_metadata())
+    except ValueError as exc:
+        sys.exit(f"vnc: {exc}")
+    print(url)
+    if open_browser:
+        try:
+            webbrowser.open(url)
+        except (webbrowser.Error, OSError):
+            pass
+
+
 def cmd_install(agents: list[str], dry_run: bool, use_all: bool) -> None:
     from .installers import detected_agents, install_all
 
+    from .config import load_config, set_vnc_enabled
+    if not dry_run and "vnc" not in load_config() and sys.stdin.isatty():
+        answer = input("Enable groken vnc? [y/N] ").strip().lower()
+        set_vnc_enabled(answer in {"y", "yes"})
     selection = _resolve_selection(agents, use_all, detected_agents(), "install into")
     if not selection:
         print("nothing selected.")
@@ -265,6 +283,8 @@ def _main_impl() -> None:
     sub.add_parser("bots")
     sub.add_parser("agents")
     sub.add_parser("capabilities")
+    vnc_parser = sub.add_parser("vnc")
+    vnc_parser.add_argument("--open", action="store_true", dest="open_browser")
     sub.add_parser("events")
     sp = sub.add_parser("send"); sp.add_argument("text"); sp.add_argument("agent", nargs="?")
     sp = sub.add_parser("tail")
@@ -302,6 +322,7 @@ def _main_impl() -> None:
         "bots": cmd_agents,
         "agents": cmd_agents,
         "capabilities": cmd_capabilities,
+        "vnc": lambda: cmd_vnc(args.open_browser),
         "events": cmd_events,
         "send": lambda: cmd_gsend(args.agent, args.text),
         "tail": lambda: cmd_tail(args.agent, args.limit, args.as_json, args.since, args.full),
