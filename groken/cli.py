@@ -41,6 +41,7 @@ Everyday use:
   groken tail               recent conversation
   groken agents             list your Bots
   groken capabilities       official gateway inventory + safe live status
+  groken inspect-app        diff the installed app's command table vs groken
 
 Run any command with --help for its options."""
 
@@ -210,6 +211,17 @@ def cmd_capabilities() -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def cmd_inspect_app(app_path: str | None, fail_on_drift: bool) -> None:
+    from .inspect_app import AsarError, inspect_app
+
+    try:
+        report = inspect_app(app_path)
+    except AsarError as e:
+        sys.exit(f"inspect-app: {e}")
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if fail_on_drift and not report["drift"]["clean"]:
+        sys.exit(2)
+
 
 def _main_impl() -> None:
     p = argparse.ArgumentParser(prog="groken")
@@ -240,6 +252,9 @@ def _main_impl() -> None:
     sp.add_argument("--full", action="store_true")
     sp = sub.add_parser("ask"); sp.add_argument("text"); sp.add_argument("agent", nargs="?"); sp.add_argument("--timeout", type=float, default=600)
     sub.add_parser("sandboxes")
+    sp = sub.add_parser("inspect-app")
+    sp.add_argument("--app-path", default=None)
+    sp.add_argument("--fail-on-drift", action="store_true")
     args = p.parse_args()
     if args.cmd is None:
         print(GUIDE)
@@ -258,6 +273,7 @@ def _main_impl() -> None:
         "tail": lambda: cmd_tail(args.agent, args.limit, args.as_json, args.since, args.full),
         "ask": lambda: cmd_gask(args.agent, args.text, args.timeout),
         "sandboxes": cmd_sandboxes,
+        "inspect-app": lambda: cmd_inspect_app(args.app_path, args.fail_on_drift),
     }[args.cmd]()
 
 
