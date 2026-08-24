@@ -1,12 +1,37 @@
 import asyncio
+import functools
+import inspect
 import json
 
+import httpx
 from mcp.server.mcpserver import MCPServer
+
+from .client import ConnectError
+from .errors import explain_error
 
 from .capabilities import capability_manifest, live_read_only_status
 from .gateway import GatewayManager
 
 server = MCPServer("groken")
+
+
+def _translate_tool_errors(fn):
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_wrapper(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except (ConnectError, httpx.HTTPError) as exc:
+                return explain_error(exc)
+        return async_wrapper
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (ConnectError, httpx.HTTPError) as exc:
+            return explain_error(exc)
+    return wrapper
 
 
 def _resolve(mgr: GatewayManager, bot: str | None) -> str:
@@ -63,7 +88,9 @@ for fn in (
     grok_bot_capabilities,
     grok_bot_tail,
 ):
-    server.add_tool(fn)
+    wrapped = _translate_tool_errors(fn)
+    globals()[fn.__name__] = wrapped
+    server.add_tool(wrapped)
 
 
 def main() -> None:
