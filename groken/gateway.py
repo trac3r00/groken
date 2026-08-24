@@ -199,57 +199,84 @@ class GatewaySession:
             lambda: self.send_prompt(agent_id, text, client_nonce=client_nonce)
         )
         seen_ids: set[str] = set()
+        anchor_id: str | None = None
         deadline = deadline if deadline is not None else self._now() + timeout_s
-        with self.http.stream(
-            "GET", f"{self.gateway_url}/events", headers=self._headers(),
-        ) as response:
-            if response.status_code != 200:
-                raise ConnectError(response.status_code, "events stream rejected")
-            if self._now() >= deadline:
-                raise ConnectError(0, "reply incomplete")
-            send_prompt()
-            send_epoch_ms = time.time() * 1000
-            for line in response.iter_lines():
-                now = self._now()
-                if now >= deadline:
-                    break
-                if not line.startswith("data:"):
-                    continue
-                try:
-                    frame = json.loads(line[5:].strip())
-                except ValueError:
-                    continue
-                channel = frame.get("channel")
-                payload = frame.get("payload") or {}
-                if channel == "transcript" and payload.get("type") == "appended":
-                    if payload.get("agentId") not in (None, agent_id):
-                        continue
-                    entry = payload.get("entry") or {}
-                    timestamp = entry.get("timestampMs")
-                    if (
-                        isinstance(timestamp, (int, float))
-                        and timestamp < send_epoch_ms - 2000
-                    ):
-                        continue
-                    if entry.get("kind") == "send-message":
-                        entry_id = entry.get("id")
-                        if entry_id is not None and entry_id in seen_ids:
-                            continue
-                        content = (entry.get("message") or {}).get("content")
-                        if isinstance(content, str) and content and content != text:
-                            if entry_id is not None:
-                                seen_ids.add(entry_id)
-                            completion.append(content, now)
-                elif channel == "agent-upserted":
-                    agent = payload.get("agent") or {}
-                    if agent.get("id") == agent_id:
-                        completion.observe(self._authoritative_busy(agent))
+        send_epoch_ms = time.time() * 1000
+        send_prompt()
+        attempts = 0
 
-                now = self._now()
-                if completion.complete(now):
+        def accept(entry: dict[str, Any], now: float) -> None:
+            nonlocal anchor_id
+            if entry.get("kind") != "send-message":
+                return
+            entry_id = entry.get("id")
+            if entry_id is None or entry_id in seen_ids:
+                return
+            timestamp = entry.get("timestampMs")
+            if isinstance(timestamp, (int, float)) and timestamp < send_epoch_ms - 2000:
+                return
+            content = (entry.get("message") or {}).get("content")
+            if not isinstance(content, str) or not content or content == text:
+                return
+            seen_ids.add(entry_id)
+            anchor_id = anchor_id or entry_id
+            completion.append(content, now)
+
+        while attempts <= 6 and self._now() < deadline:
+            try:
+                with self.http.stream("GET", f"{self.gateway_url}/events", headers=self._headers()) as response:
+                    if response.status_code != 200:
+                        raise ConnectError(response.status_code, "events stream rejected")
+                    for line in response.iter_lines():
+                        now = self._now()
+                        if now >= deadline:
+                            break
+                        if not line.startswith("data:"):
+                            continue
+                        try:
+                            frame = json.loads(line[5:].strip())
+                        except ValueError:
+                            continue
+                        channel = frame.get("channel")
+                        payload = frame.get("payload") or {}
+                        if channel == "transcript" and payload.get("type") == "appended":
+                            if payload.get("agentId") not in (None, agent_id):
+                                continue
+                            accept(payload.get("entry") or {}, now)
+                        elif channel == "agent-upserted":
+                            agent = payload.get("agent") or {}
+                            if agent.get("id") == agent_id:
+                                completion.observe(self._authoritative_busy(agent))
+                        if completion.complete(self._now()):
+                            return "\n".join(completion.chunks)
+                        if completion.chunks and self._now() - completion.last_change >= idle_s:
+                            raise ConnectError(0, "reply incomplete")
+            except (ConnectError, httpx.HTTPError):
+                # A stream that never opened is the normal signal to use polling;
+                # only a post-anchor disconnect is eligible for transcript resume.
+                if attempts == 0 and anchor_id is None:
+                    raise
+                if attempts >= 6:
+                    raise
+                tail = self.transcript_tail(agent_id)
+                if anchor_id is None or not any(e.get("id") == anchor_id for e in tail):
+                    raise ConnectError(0, "transcript anchor lost")
+                after_anchor = False
+                for entry in tail:
+                    if entry.get("id") == anchor_id:
+                        after_anchor = True
+                        continue
+                    if after_anchor:
+                        accept(entry, self._now())
+                if completion.complete(self._now()):
                     return "\n".join(completion.chunks)
-                if completion.chunks and now - completion.last_change >= idle_s:
+                delay = min(0.25 * (2 ** attempts), 4.0)
+                if self._now() + delay >= deadline:
                     break
+                self._sleep_for(delay)
+                attempts += 1
+                continue
+            break
         raise ConnectError(0, "reply incomplete")
 
     def _ask_via_poll(
