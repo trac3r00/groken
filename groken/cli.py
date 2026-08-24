@@ -140,33 +140,9 @@ def cmd_service_uninstall(dry_run: bool) -> None:
 
 
 def cmd_doctor() -> None:
-    import importlib.metadata
+    from .doctor import run_doctor
 
-    from .client import detect_client_version
-    from .config import bot_name, cached_bot_id
-
-    ok = True
-    version = importlib.metadata.version("groken")
-    print(f"groken {version} | app client version: {detect_client_version()}")
-    tokens = load_tokens()
-    if tokens and "accessToken" in tokens:
-        print("tokens: present")
-    else:
-        ok = False
-        print("tokens: MISSING — run: groken login")
-    if tokens:
-        try:
-            mgr = _manager()
-            box = mgr._ensure_sandbox()
-            print(f"sandbox: pod {box.get('podId', '?')} ({'gateway ok' if box.get('gatewayUrl') else 'no gateway url'})")
-            agents = mgr.command("listAgents")
-            print(f"agents: {len(agents)} visible")
-            own = mgr.own_agent_id()
-            print(f"own bot ({bot_name()}): {own}" + (" (cached)" if cached_bot_id() == own else ""))
-        except Exception as e:  # noqa: BLE001 - doctor reports all startup failures
-            ok = False
-            print(f"sandbox/agents: FAIL — {e}")
-    sys.exit(0 if ok else 1)
+    sys.exit(run_doctor())
 
 
 def cmd_refresh() -> None:
