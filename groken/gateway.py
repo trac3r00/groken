@@ -147,6 +147,7 @@ class GatewaySession:
         timeout_s: float = 600,
         idle_s: float = 45,
         client_nonce: str | None = None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> str:
         nonce = client_nonce or str(uuid.uuid4())
         completion = _ReplyCompletion(self._now())
@@ -170,6 +171,7 @@ class GatewaySession:
                 completion,
                 send_prompt_once,
                 deadline,
+                on_chunk,
             )
         except (ConnectError, httpx.HTTPError):
             return self._ask_via_poll(
@@ -181,7 +183,15 @@ class GatewaySession:
                 completion,
                 send_prompt_once,
                 deadline,
+                on_chunk,
             )
+
+    def ask_stream(
+        self, agent_id: str, text: str, timeout_s: float = 600,
+        idle_s: float = 45, client_nonce: str | None = None,
+        on_chunk: Callable[[str], None] | None = None,
+    ) -> str:
+        return self.ask(agent_id, text, timeout_s, idle_s, client_nonce, on_chunk)
 
     def _ask_via_events(
         self,
@@ -193,6 +203,7 @@ class GatewaySession:
         completion: _ReplyCompletion | None = None,
         send_prompt: Callable[[], None] | None = None,
         deadline: float | None = None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> str:
         completion = completion or _ReplyCompletion(self._now())
         send_prompt = send_prompt or (
@@ -221,6 +232,8 @@ class GatewaySession:
             seen_ids.add(entry_id)
             anchor_id = anchor_id or entry_id
             completion.append(content, now)
+            if on_chunk is not None:
+                on_chunk(content)
 
         while attempts <= 6 and self._now() < deadline:
             try:
@@ -289,6 +302,7 @@ class GatewaySession:
         completion: _ReplyCompletion | None = None,
         send_prompt: Callable[[], None] | None = None,
         deadline: float | None = None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> str:
         completion = completion or _ReplyCompletion(self._now())
         send_prompt = send_prompt or (
@@ -319,6 +333,8 @@ class GatewaySession:
                 content = (entry.get("message") or {}).get("content")
                 if isinstance(content, str) and content and content != text:
                     completion.append(content, now)
+                    if on_chunk is not None:
+                        on_chunk(content)
                 before.add(marker)
             completion.observe(busy)
             now = self._now()
@@ -439,6 +455,16 @@ class GatewayManager:
             if not self._should_remint(error):
                 raise
             return self.session(force=True).ask(agent_id, text, timeout_s, idle_s, nonce)
+
+    def ask_stream(self, agent_id: str, text: str, timeout_s: float = 600,
+                   idle_s: float = 45, on_chunk: Callable[[str], None] | None = None) -> str:
+        nonce = str(uuid.uuid4())
+        try:
+            return self.session().ask_stream(agent_id, text, timeout_s, idle_s, nonce, on_chunk)
+        except (ConnectError, httpx.HTTPError) as error:
+            if not self._should_remint(error):
+                raise
+            return self.session(force=True).ask_stream(agent_id, text, timeout_s, idle_s, nonce, on_chunk)
 
     def events(self, channels: list[str] | None = None) -> Iterator[dict[str, Any]]:
         for attempt in range(2):

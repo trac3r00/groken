@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from groken.client import ConnectError
-from groken.gateway import GatewaySession
+from groken.gateway import GatewayManager, GatewaySession
 
 
 class FakeClock:
@@ -127,6 +127,49 @@ def test_events_collect_late_append_after_busy_false_and_two_fast_stable_ticks()
 
     assert session.ask("a1", "q", timeout_s=30, idle_s=20) == "partial\nfinal"
     assert len(prompts) == 1
+
+
+def test_ask_stream_emits_chunks_in_order_and_returns_full_reply() -> None:
+    session, _, prompts = make_session([
+        (0, upsert(True, True)),
+        (0, upsert(False, False)),
+        (0, appended("r1", "first")),
+        (0, appended("r2", "second")),
+        (0, upsert(False, False)),
+        (2, upsert(False, False)),
+    ])
+    chunks: list[str] = []
+
+    assert session.ask_stream("a1", "q", timeout_s=30, on_chunk=chunks.append) == "first\nsecond"
+    assert chunks == ["first", "second"]
+    assert len(prompts) == 1
+
+
+def test_ask_stream_partial_timeout_raises() -> None:
+    session, _, _ = make_session([
+        (0, upsert(True, True)),
+        (0, appended("r1", "partial")),
+        (0, upsert(False, False)),
+        (4, None),
+    ])
+    with pytest.raises(ConnectError, match="reply incomplete"):
+        session.ask_stream("a1", "q", timeout_s=3, on_chunk=lambda _: None)
+
+
+def test_manager_ask_stream_delegates_to_session() -> None:
+    manager = GatewayManager.__new__(GatewayManager)
+    calls: list[tuple[object, ...]] = []
+
+    class Session:
+        def ask_stream(self, *args: object) -> str:
+            calls.append(args)
+            return "reply"
+
+    manager._session = Session()  # type: ignore[assignment]
+    chunks: list[str] = []
+    assert manager.ask_stream("a1", "q", on_chunk=chunks.append) == "reply"
+    assert calls[0][0:2] == ("a1", "q")
+    assert callable(calls[0][-1])
 
 
 def test_timeout_with_partial_chunks_raises_instead_of_returning_partial() -> None:
