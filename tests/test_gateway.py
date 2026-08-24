@@ -75,6 +75,16 @@ def test_transcript_tail_uses_id_field():
 
 
 def test_ask_collects_reply_after_send():
+    class FakeClock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    clock = FakeClock()
     calls = {"tail": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -83,7 +93,9 @@ def test_ask_collects_reply_after_send():
         if request.url.path.endswith("/events"):
             return httpx.Response(404, text="no events in poll-path test")
         if request.url.path.endswith("/api/listAgents"):
-            return httpx.Response(404, text="no roster in poll-path test")
+            return httpx.Response(200, json=[{
+                "id": "a1", "isComposingMessage": False, "isRunning": False,
+            }])
         calls["tail"] += 1
         if calls["tail"] == 1:
             entries = [{"kind": "send-message", "id": "old", "message": {"content": "earlier"}}]
@@ -96,13 +108,9 @@ def test_ask_collects_reply_after_send():
         return httpx.Response(200, json={"entries": entries})
 
     s = make_session(handler)
-    import groken.gateway as g
-    orig_sleep = g.time.sleep
-    g.time.sleep = lambda _s: None
-    try:
-        reply = s.ask("a1", "run it", timeout_s=30, idle_s=0)
-    finally:
-        g.time.sleep = orig_sleep
+    s._monotonic = clock.monotonic
+    s._sleep = clock.sleep
+    reply = s.ask("a1", "run it", timeout_s=30, idle_s=30)
     assert reply == "441"
 
 

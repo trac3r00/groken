@@ -35,6 +35,16 @@ def test_tail_null_body_returns_empty():
 
 
 def test_ask_dedupes_same_entry_across_polls():
+    class FakeClock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    clock = FakeClock()
     calls = {"n": 0}
 
     def handler(request):
@@ -43,7 +53,9 @@ def test_ask_dedupes_same_entry_across_polls():
         if request.url.path.endswith("/events"):
             return httpx.Response(404, text="no events in poll-path test")
         if request.url.path.endswith("/api/listAgents"):
-            return httpx.Response(404, text="no roster in poll-path test")
+            return httpx.Response(200, json=[{
+                "id": "a1", "isComposingMessage": False, "isRunning": False,
+            }])
         calls["n"] += 1
         entries = [{"kind": "send-message", "id": "old", "message": {"content": "earlier"}}]
         if calls["n"] >= 2:
@@ -51,12 +63,9 @@ def test_ask_dedupes_same_entry_across_polls():
         return httpx.Response(200, json={"entries": entries})
 
     s = make_session(handler)
-    orig_sleep = gw_mod.time.sleep
-    gw_mod.time.sleep = lambda _s: None
-    try:
-        reply = s.ask("a1", "q", timeout_s=30, idle_s=0)
-    finally:
-        gw_mod.time.sleep = orig_sleep
+    s._monotonic = clock.monotonic
+    s._sleep = clock.sleep
+    reply = s.ask("a1", "q", timeout_s=30, idle_s=30)
     assert reply == "done"
     assert reply.count("done") == 1
 

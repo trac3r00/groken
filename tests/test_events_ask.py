@@ -1,204 +1,257 @@
 import json
+from collections.abc import Iterator
 
 import httpx
+import pytest
 
-import groken.gateway as gw_mod
+from groken.client import ConnectError
 from groken.gateway import GatewaySession
 
 
-def sse_body(frames):
-    out = b""
-    for f in frames:
-        out += b"event: message\n"
-        out += b"data: " + json.dumps(f).encode() + b"\n\n"
-    return out
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
-def make_session(events_frames, tail_entries):
-    s = GatewaySession.__new__(GatewaySession)
-    s.gateway_url = "https://gw.example"
-    s.gateway_token = "gt"
-    s.network_token = "nt"
-    s.pod_id = "pod-1"
+class ScriptedEvents(httpx.SyncByteStream):
+    def __init__(
+        self,
+        clock: FakeClock,
+        frames: list[tuple[float, dict[str, object] | None]],
+    ) -> None:
+        self.clock = clock
+        self.frames = frames
 
-    def handler(request):
-        path = request.url.path
-        if path.endswith("/api/sendPrompt"):
-            return httpx.Response(200, json={"accepted": True})
-        if path.endswith("/api/getAgentTranscriptTail"):
-            return httpx.Response(200, json={"entries": tail_entries})
-        if path.endswith("/api/listAgents"):
-            return httpx.Response(200, json=[])
-        if path.endswith("/events"):
-            return httpx.Response(200, content=sse_body(events_frames),
-                                  headers={"content-type": "text/event-stream"})
-        return httpx.Response(404)
-
-    s.http = httpx.Client(transport=httpx.MockTransport(handler))
-    return s
+    def __iter__(self) -> Iterator[bytes]:
+        for delay, frame in self.frames:
+            self.clock.sleep(delay)
+            if frame is None:
+                yield b": tick\n\n"
+            else:
+                yield b"event: message\ndata: " + json.dumps(frame).encode() + b"\n\n"
 
 
-def test_ask_via_events_returns_on_compose_flip():
-    frames = [
-        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
-            "entry": {"kind": "message", "id": "u1", "role": "user", "content": "q"}}},
-        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": True, "isRunning": True}}},
-        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
-            "entry": {"kind": "send-message", "id": "r1", "message": {"type": "text", "content": "pong"}}}},
-        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": False, "isRunning": True}}},
-        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": False, "isRunning": False}}},
-    ]
-    s = make_session(frames, [])
-    orig_sleep = gw_mod.time.sleep
-    gw_mod.time.sleep = lambda _s: None
-    try:
-        reply = s.ask("a1", "q", timeout_s=30)
-    finally:
-        gw_mod.time.sleep = orig_sleep
-    assert reply == "pong"
+def appended(entry_id: str, content: str) -> dict[str, object]:
+    return {
+        "channel": "transcript",
+        "payload": {
+            "type": "appended",
+            "agentId": "a1",
+            "entry": {
+                "kind": "send-message",
+                "id": entry_id,
+                "message": {"type": "text", "content": content},
+            },
+        },
+    }
 
 
-def test_ask_via_events_ignores_stale_replayed_entries():
-    frames = [
-        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
-            "entry": {"kind": "send-message", "id": "stale1", "timestampMs": 1,
-                      "message": {"type": "text", "content": "old reply from previous turn"}}}},
-        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": True, "isRunning": True}}},
-        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
-            "entry": {"kind": "send-message", "id": "r1", "timestampMs": 9_999_999_999_999,
-                      "message": {"type": "text", "content": "fresh pong"}}}},
-        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": False, "isRunning": True}}},
-        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": False, "isRunning": False}}},
-    ]
-    s = make_session(frames, [])
-    orig_sleep = gw_mod.time.sleep
-    gw_mod.time.sleep = lambda _s: None
-    try:
-        reply = s.ask("a1", "q", timeout_s=30)
-    finally:
-        gw_mod.time.sleep = orig_sleep
-    assert reply == "fresh pong"
-    assert "old reply" not in reply
+def upsert(composing: bool, running: bool) -> dict[str, object]:
+    return {
+        "channel": "agent-upserted",
+        "payload": {
+            "agent": {
+                "id": "a1",
+                "isComposingMessage": composing,
+                "isRunning": running,
+            },
+        },
+    }
 
 
-def test_ask_via_events_dedupes_repeated_entry_ids():
-    frames = [
-        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": True}}},
-        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
-            "entry": {"kind": "send-message", "id": "r1", "timestampMs": 9_999_999_999_999,
-                      "message": {"type": "text", "content": "pong"}}}},
-        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
-            "entry": {"kind": "send-message", "id": "r1", "timestampMs": 9_999_999_999_999,
-                      "message": {"type": "text", "content": "pong"}}}},
-        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": False}}},
-    ]
-    s = make_session(frames, [])
-    orig_sleep = gw_mod.time.sleep
-    gw_mod.time.sleep = lambda _s: None
-    try:
-        reply = s.ask("a1", "q", timeout_s=30)
-    finally:
-        gw_mod.time.sleep = orig_sleep
-    assert reply == "pong"
+def make_session(
+    frames: list[tuple[float, dict[str, object] | None]],
+    *,
+    tails: list[list[dict[str, object]]] | None = None,
+    agents: list[list[dict[str, object]]] | None = None,
+    events_status: int = 200,
+) -> tuple[GatewaySession, FakeClock, list[dict[str, object]]]:
+    clock = FakeClock()
+    prompts: list[dict[str, object]] = []
+    tail_script = list(tails or [[]])
+    agent_script = list(agents or [[]])
 
-
-def test_ask_via_events_breaks_on_not_composing_without_prior_compose():
-    frames = [
-        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
-            "entry": {"kind": "send-message", "id": "r1", "timestampMs": 9_999_999_999_999,
-                      "message": {"type": "text", "content": "pong"}}}},
-        {"channel": "agent-upserted", "payload": {"agent": {"id": "a1", "isComposingMessage": False}}},
-    ]
-    s = make_session(frames, [])
-    orig_sleep = gw_mod.time.sleep
-    gw_mod.time.sleep = lambda _s: None
-    try:
-        reply = s.ask("a1", "q", timeout_s=30, idle_s=999)
-    finally:
-        gw_mod.time.sleep = orig_sleep
-    assert reply == "pong"
-
-
-def test_ask_via_events_ignores_other_agents_and_falls_back_on_sse_failure():
-    s = make_session([], [])
-    calls = {"tail": 0}
-    orig_tail = s.transcript_tail
-
-    def tail(agent_id):
-        calls["tail"] += 1
-        if calls["tail"] == 1:
-            return [{"kind": "send-message", "id": "old", "message": {"content": "x"}}]
-        return [
-            {"kind": "send-message", "id": "old", "message": {"content": "x"}},
-            {"kind": "send-message", "id": "r1", "message": {"content": "via-poll"}},
-        ]
-
-    s.transcript_tail = tail
-    orig_sleep = gw_mod.time.sleep
-    gw_mod.time.sleep = lambda _s: None
-    orig_busy = s.agent_busy
-    s.agent_busy = lambda agent_id: None
-    try:
-        reply = s.ask("a1", "q", timeout_s=30, idle_s=0)
-    finally:
-        gw_mod.time.sleep = orig_sleep
-        s.transcript_tail = orig_tail
-        s.agent_busy = orig_busy
-    assert reply == "via-poll"
-
-
-def test_ask_via_events_waits_until_running_is_false() -> None:
-    frames = [
-        {"channel": "agent-upserted", "payload": {"agent": {
-            "id": "a1", "isComposingMessage": True, "isRunning": True,
-        }}},
-        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
-            "entry": {"kind": "send-message", "id": "r1", "timestampMs": 9_999_999_999_999,
-                      "message": {"content": "partial"}}}},
-        {"channel": "agent-upserted", "payload": {"agent": {
-            "id": "a1", "isComposingMessage": False, "isRunning": True,
-        }}},
-        {"channel": "transcript", "payload": {"type": "appended", "agentId": "a1",
-            "entry": {"kind": "send-message", "id": "r2", "timestampMs": 9_999_999_999_999,
-                      "message": {"content": "final"}}}},
-        {"channel": "agent-upserted", "payload": {"agent": {
-            "id": "a1", "isComposingMessage": False, "isRunning": False,
-        }}},
-    ]
-    session = make_session(frames, [])
-
-    assert session.ask("a1", "q", timeout_s=30) == "partial\nfinal"
-
-
-def test_ask_reuses_nonce_when_events_fall_back_to_poll() -> None:
-    nonces: list[str] = []
-    tails = 0
+    def next_value(script: list[list[dict[str, object]]]) -> list[dict[str, object]]:
+        if len(script) > 1:
+            return script.pop(0)
+        return script[0]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal tails
-        if request.url.path.endswith("/events"):
-            return httpx.Response(200, content=b"", headers={"content-type": "text/event-stream"})
-        if request.url.path.endswith("/api/sendPrompt"):
-            nonces.append(json.loads(request.content)["clientNonce"])
+        path = request.url.path
+        if path.endswith("/api/sendPrompt"):
+            prompts.append(json.loads(request.content))
             return httpx.Response(200, json={"accepted": True})
-        if request.url.path.endswith("/api/getAgentTranscriptTail"):
-            tails += 1
-            entries = [] if tails == 1 else [
-                {"kind": "send-message", "id": "r1", "message": {"content": "via-poll"}},
-            ]
-            return httpx.Response(200, json={"entries": entries})
-        if request.url.path.endswith("/api/listAgents"):
-            return httpx.Response(200, json=[])
+        if path.endswith("/api/getAgentTranscriptTail"):
+            return httpx.Response(200, json={"entries": next_value(tail_script)})
+        if path.endswith("/api/listAgents"):
+            return httpx.Response(200, json=next_value(agent_script))
+        if path.endswith("/events"):
+            if events_status != 200:
+                return httpx.Response(events_status, text="events unavailable")
+            return httpx.Response(
+                200,
+                stream=ScriptedEvents(clock, frames),
+                headers={"content-type": "text/event-stream"},
+            )
         return httpx.Response(404)
 
-    session = make_session([], [])
+    session = GatewaySession(
+        "https://gw.example",
+        "gt",
+        "nt",
+        "pod-1",
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+    )
     session.http = httpx.Client(transport=httpx.MockTransport(handler))
-    original_sleep = gw_mod.time.sleep
-    gw_mod.time.sleep = lambda _seconds: None
-    try:
-        assert session.ask("a1", "q", timeout_s=30, idle_s=0) == "via-poll"
-    finally:
-        gw_mod.time.sleep = original_sleep
+    return session, clock, prompts
 
-    assert len(nonces) == 2
-    assert len(set(nonces)) == 1
+
+def test_events_collect_late_append_after_busy_false_and_two_fast_stable_ticks() -> None:
+    session, _, prompts = make_session([
+        (0, upsert(True, True)),
+        (0, appended("r1", "partial")),
+        (0, upsert(False, False)),
+        (1, upsert(False, False)),
+        # Two stable idle upserts are not enough until the reply has been quiet for 2s.
+        (0, appended("r2", "final")),
+        (0, upsert(False, False)),
+        (2, upsert(False, False)),
+    ])
+
+    assert session.ask("a1", "q", timeout_s=30, idle_s=20) == "partial\nfinal"
+    assert len(prompts) == 1
+
+
+def test_timeout_with_partial_chunks_raises_instead_of_returning_partial() -> None:
+    session, clock, prompts = make_session([
+        (0, upsert(True, True)),
+        (0, appended("r1", "partial")),
+        (0, upsert(False, False)),  # only one stable observation
+        (4, None),
+    ])
+
+    with pytest.raises(ConnectError, match="reply incomplete") as raised:
+        session.ask("a1", "q", timeout_s=3, idle_s=20)
+
+    assert raised.value.body == "reply incomplete"
+    assert clock.now == 4
+    assert len(prompts) == 1
+
+
+def test_idle_expiry_with_partial_chunks_raises() -> None:
+    session, clock, prompts = make_session([
+        (0, upsert(True, True)),
+        (0, appended("r1", "partial")),
+        (0, upsert(False, False)),
+        (3, None),
+    ])
+
+    with pytest.raises(ConnectError, match="reply incomplete"):
+        session.ask("a1", "q", timeout_s=30, idle_s=2)
+
+    assert clock.now == 3
+    assert len(prompts) == 1
+
+
+def test_composing_false_while_running_true_does_not_complete() -> None:
+    session, _, _ = make_session([
+        (0, upsert(True, True)),
+        (0, appended("r1", "partial")),
+        (2, upsert(False, True)),
+        (0, appended("r2", "final")),
+        (0, upsert(False, False)),
+        (2, upsert(False, False)),
+    ])
+
+    assert session.ask("a1", "q", timeout_s=30, idle_s=20) == "partial\nfinal"
+
+
+def test_events_dedupe_and_ignore_stale_or_other_agent_entries() -> None:
+    stale = appended("stale", "old")
+    stale["payload"]["entry"]["timestampMs"] = 1  # type: ignore[index]
+    other = appended("other", "wrong agent")
+    other["payload"]["agentId"] = "a2"  # type: ignore[index]
+    reply = appended("r1", "fresh")
+    session, _, _ = make_session([
+        (0, stale),
+        (0, other),
+        (0, upsert(True, True)),
+        (0, reply),
+        (0, reply),
+        (0, upsert(False, False)),
+        (2, upsert(False, False)),
+    ])
+
+    assert session.ask("a1", "q", timeout_s=30, idle_s=20) == "fresh"
+
+
+def test_poll_fallback_requires_two_stable_tails_and_authoritative_idle() -> None:
+    old = {"kind": "send-message", "id": "old", "message": {"content": "old"}}
+    fresh = {"kind": "send-message", "id": "r1", "message": {"content": "via-poll"}}
+    idle = [{"id": "a1", "isComposingMessage": False, "isRunning": False}]
+    session, clock, prompts = make_session(
+        [],
+        events_status=404,
+        tails=[[old], [old, fresh], [old, fresh]],
+        agents=[idle, idle],
+    )
+
+    assert session.ask("a1", "q", timeout_s=30, idle_s=20) == "via-poll"
+    assert clock.now >= 4
+    assert len(prompts) == 1
+
+
+def test_poll_treats_running_true_as_busy_after_composing_stops() -> None:
+    partial = {"kind": "send-message", "id": "r1", "message": {"content": "partial"}}
+    final = {"kind": "send-message", "id": "r2", "message": {"content": "final"}}
+    running = [{"id": "a1", "isComposingMessage": False, "isRunning": True}]
+    idle = [{"id": "a1", "isComposingMessage": False, "isRunning": False}]
+    session, _, prompts = make_session(
+        [],
+        events_status=404,
+        tails=[[], [partial], [partial], [partial, final], [partial, final], [partial, final]],
+        agents=[running, running, running, idle, idle],
+    )
+
+    assert session.ask("a1", "q", timeout_s=30, idle_s=20) == "partial\nfinal"
+    assert len(prompts) == 1
+
+
+def test_poll_one_stable_tail_then_timeout_raises() -> None:
+    fresh = {"kind": "send-message", "id": "r1", "message": {"content": "partial"}}
+    idle = [{"id": "a1", "isComposingMessage": False, "isRunning": False}]
+    session, _, prompts = make_session(
+        [],
+        events_status=404,
+        tails=[[], [fresh], [fresh], [fresh]],
+        agents=[idle, [], []],
+    )
+
+    with pytest.raises(ConnectError, match="reply incomplete"):
+        session.ask("a1", "q", timeout_s=5, idle_s=20)
+
+    assert len(prompts) == 1
+
+
+def test_post_send_event_fallback_does_not_resend_prompt() -> None:
+    fresh = {"kind": "send-message", "id": "r1", "message": {"content": "via-poll"}}
+    idle = [{"id": "a1", "isComposingMessage": False, "isRunning": False}]
+    session, _, prompts = make_session(
+        [],
+        tails=[[], [fresh], [fresh]],
+        agents=[idle, idle],
+    )
+
+    assert session.ask(
+        "a1", "q", timeout_s=30, idle_s=20, client_nonce="nonce-1",
+    ) == "via-poll"
+    assert len(prompts) == 1
+    assert prompts[0]["prompt"] == "q"
+    assert prompts[0]["clientNonce"] == "nonce-1"

@@ -1,7 +1,7 @@
 import json
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
@@ -13,15 +13,61 @@ from .config import bot_name, cached_bot_id, remember_bot
 from .provisioning import WORKER_DESCRIPTION, WORKER_TITLE
 
 GATEWAY_COMMANDS_TIMEOUT = httpx.Timeout(30.0, read=120.0)
+_REPLY_QUIET_S = 2.0
+
+
+class _ReplyCompletion:
+    def __init__(self, now: float) -> None:
+        self.chunks: list[str] = []
+        self.busy: bool | None = None
+        self.stable_observations = 0
+        self.last_change = now
+
+    def append(self, content: str, now: float) -> None:
+        self.chunks.append(content)
+        self.stable_observations = 0
+        self.last_change = now
+
+    def observe(self, busy: bool | None) -> None:
+        self.busy = busy
+        if busy is False:
+            self.stable_observations += 1
+        else:
+            self.stable_observations = 0
+
+    def complete(self, now: float) -> bool:
+        return bool(
+            self.chunks
+            and self.busy is False
+            and self.stable_observations >= 2
+            and now - self.last_change >= _REPLY_QUIET_S
+        )
 
 
 class GatewaySession:
-    def __init__(self, gateway_url: str, gateway_token: str, network_token: str, pod_id: str):
+    def __init__(
+        self,
+        gateway_url: str,
+        gateway_token: str,
+        network_token: str,
+        pod_id: str,
+        *,
+        monotonic: Callable[[], float] | None = None,
+        sleeper: Callable[[float], None] | None = None,
+    ):
         self.gateway_url = gateway_url.rstrip("/")
         self.gateway_token = gateway_token
         self.network_token = network_token
         self.pod_id = pod_id
+        self._monotonic = monotonic or time.monotonic
+        self._sleep = sleeper or time.sleep
         self.http = httpx.Client(timeout=GATEWAY_COMMANDS_TIMEOUT)
+
+    def _now(self) -> float:
+        return getattr(self, "_monotonic", time.monotonic)()
+
+    def _sleep_for(self, seconds: float) -> None:
+        getattr(self, "_sleep", time.sleep)(seconds)
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -72,6 +118,16 @@ class GatewaySession:
         data = self.command("getAgentTranscriptTail", {"id": agent_id})
         return list((data or {}).get("entries", []))
 
+    @staticmethod
+    def _authoritative_busy(agent: dict[str, Any]) -> bool | None:
+        composing = agent.get("isComposingMessage")
+        running = agent.get("isRunning")
+        if composing is True or running is True:
+            return True
+        if composing is False and running is False:
+            return False
+        return None
+
     def agent_busy(self, agent_id: str) -> bool | None:
         try:
             agents = self.command("listAgents")
@@ -79,9 +135,9 @@ class GatewaySession:
             return None
         if not isinstance(agents, list):
             return None
-        for a in agents:
-            if isinstance(a, dict) and a.get("id") == agent_id:
-                return bool(a.get("isComposingMessage") or a.get("isRunning"))
+        for agent in agents:
+            if isinstance(agent, dict) and agent.get("id") == agent_id:
+                return self._authoritative_busy(agent)
         return None
 
     def ask(
@@ -93,10 +149,39 @@ class GatewaySession:
         client_nonce: str | None = None,
     ) -> str:
         nonce = client_nonce or str(uuid.uuid4())
+        completion = _ReplyCompletion(self._now())
+        deadline = self._now() + timeout_s
+        prompt_sent = False
+
+        def send_prompt_once() -> None:
+            nonlocal prompt_sent
+            if prompt_sent:
+                return
+            prompt_sent = True
+            self.send_prompt(agent_id, text, client_nonce=nonce)
+
         try:
-            return self._ask_via_events(agent_id, text, timeout_s, idle_s, nonce)
+            return self._ask_via_events(
+                agent_id,
+                text,
+                timeout_s,
+                idle_s,
+                nonce,
+                completion,
+                send_prompt_once,
+                deadline,
+            )
         except (ConnectError, httpx.HTTPError):
-            return self._ask_via_poll(agent_id, text, timeout_s, idle_s, nonce)
+            return self._ask_via_poll(
+                agent_id,
+                text,
+                timeout_s,
+                idle_s,
+                nonce,
+                completion,
+                send_prompt_once,
+                deadline,
+            )
 
     def _ask_via_events(
         self,
@@ -105,23 +190,28 @@ class GatewaySession:
         timeout_s: float,
         idle_s: float,
         client_nonce: str,
+        completion: _ReplyCompletion | None = None,
+        send_prompt: Callable[[], None] | None = None,
+        deadline: float | None = None,
     ) -> str:
-        chunks: list[str] = []
+        completion = completion or _ReplyCompletion(self._now())
+        send_prompt = send_prompt or (
+            lambda: self.send_prompt(agent_id, text, client_nonce=client_nonce)
+        )
         seen_ids: set[str] = set()
-        busy = False
-        saw_busy = False
-        saw_upsert = False
-        deadline = time.monotonic() + timeout_s
+        deadline = deadline if deadline is not None else self._now() + timeout_s
         with self.http.stream(
             "GET", f"{self.gateway_url}/events", headers=self._headers(),
-        ) as r:
-            if r.status_code != 200:
-                raise ConnectError(r.status_code, "events stream rejected")
-            self.send_prompt(agent_id, text, client_nonce=client_nonce)
+        ) as response:
+            if response.status_code != 200:
+                raise ConnectError(response.status_code, "events stream rejected")
+            if self._now() >= deadline:
+                raise ConnectError(0, "reply incomplete")
+            send_prompt()
             send_epoch_ms = time.time() * 1000
-            last_activity = time.monotonic()
-            for line in r.iter_lines():
-                if time.monotonic() > deadline:
+            for line in response.iter_lines():
+                now = self._now()
+                if now >= deadline:
                     break
                 if not line.startswith("data:"):
                     continue
@@ -135,8 +225,11 @@ class GatewaySession:
                     if payload.get("agentId") not in (None, agent_id):
                         continue
                     entry = payload.get("entry") or {}
-                    ts = entry.get("timestampMs")
-                    if isinstance(ts, (int, float)) and ts < send_epoch_ms - 2000:
+                    timestamp = entry.get("timestampMs")
+                    if (
+                        isinstance(timestamp, (int, float))
+                        and timestamp < send_epoch_ms - 2000
+                    ):
                         continue
                     if entry.get("kind") == "send-message":
                         entry_id = entry.get("id")
@@ -146,23 +239,18 @@ class GatewaySession:
                         if isinstance(content, str) and content and content != text:
                             if entry_id is not None:
                                 seen_ids.add(entry_id)
-                            chunks.append(content)
-                            last_activity = time.monotonic()
+                            completion.append(content, now)
                 elif channel == "agent-upserted":
                     agent = payload.get("agent") or {}
                     if agent.get("id") == agent_id:
-                        busy = bool(
-                            agent.get("isComposingMessage") or agent.get("isRunning")
-                        )
-                        saw_busy = saw_busy or busy
-                        if not busy and chunks and (saw_busy or saw_upsert):
-                            break
-                        saw_upsert = True
-                if chunks and time.monotonic() - last_activity > idle_s:
+                        completion.observe(self._authoritative_busy(agent))
+
+                now = self._now()
+                if completion.complete(now):
+                    return "\n".join(completion.chunks)
+                if completion.chunks and now - completion.last_change >= idle_s:
                     break
-        if not chunks:
-            raise ConnectError(0, "events stream ended with no reply content")
-        return "\n".join(chunks)
+        raise ConnectError(0, "reply incomplete")
 
     def _ask_via_poll(
         self,
@@ -171,43 +259,47 @@ class GatewaySession:
         timeout_s: float,
         idle_s: float,
         client_nonce: str,
+        completion: _ReplyCompletion | None = None,
+        send_prompt: Callable[[], None] | None = None,
+        deadline: float | None = None,
     ) -> str:
+        completion = completion or _ReplyCompletion(self._now())
+        send_prompt = send_prompt or (
+            lambda: self.send_prompt(agent_id, text, client_nonce=client_nonce)
+        )
+        deadline = deadline if deadline is not None else self._now() + timeout_s
+        if self._now() >= deadline:
+            raise ConnectError(0, "reply incomplete")
+        if completion.chunks and self._now() - completion.last_change >= idle_s:
+            raise ConnectError(0, "reply incomplete")
         before = {e.get("id") for e in self.transcript_tail(agent_id)}
-        self.send_prompt(agent_id, text, client_nonce=client_nonce)
-        chunks: list[str] = []
-        deadline = time.monotonic() + timeout_s
-        last_activity = time.monotonic()
-        saw_busy = False
-        settle_polls = 0
-        while time.monotonic() < deadline:
-            time.sleep(2)
+        send_prompt()
+        while self._now() < deadline:
+            self._sleep_for(2)
+            now = self._now()
+            if now >= deadline:
+                break
             busy = self.agent_busy(agent_id)
-            if busy:
-                saw_busy = True
             try:
                 tail = self.transcript_tail(agent_id)
             except ConnectError:
+                completion.observe(None)
                 continue
-            new = [e for e in tail if e.get("id") not in before and e.get("kind") == "send-message"]
-            fresh = False
-            for e in new:
-                content = (e.get("message") or {}).get("content")
+            for entry in tail:
+                marker = entry.get("id")
+                if marker in before or entry.get("kind") != "send-message":
+                    continue
+                content = (entry.get("message") or {}).get("content")
                 if isinstance(content, str) and content and content != text:
-                    marker = e.get("id")
-                    if marker not in before:
-                        chunks.append(content)
-                        before.add(str(marker))
-                        fresh = True
-            if fresh:
-                last_activity = time.monotonic()
-                settle_polls = 0
-            if saw_busy and busy is False:
-                settle_polls += 1
-                if settle_polls >= 2:
-                    break
-            elif chunks and time.monotonic() - last_activity > idle_s:
+                    completion.append(content, now)
+                before.add(marker)
+            completion.observe(busy)
+            now = self._now()
+            if completion.complete(now):
+                return "\n".join(completion.chunks)
+            if completion.chunks and now - completion.last_change >= idle_s:
                 break
-        return "\n".join(chunks)
+        raise ConnectError(0, "reply incomplete")
 
 
 class GatewayManager:
