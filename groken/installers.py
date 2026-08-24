@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import sys
 from collections.abc import Callable
@@ -25,22 +26,96 @@ def _backup(path: Path) -> None:
         shutil.copy2(path, path.with_suffix(path.suffix + ".groken-bak"))
 
 
+def _jsonc_clean(text: str) -> str:
+    out = []
+    i = 0
+    string = False
+    while i < len(text):
+        if string:
+            out.append(text[i])
+            if text[i] == "\\" and i + 1 < len(text):
+                out.append(text[i + 1]); i += 2; continue
+            if text[i] == '"': string = False
+            i += 1; continue
+        if text[i] == '"': string = True; out.append(text[i]); i += 1; continue
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = len(text) if end < 0 else end + 2
+            continue
+        out.append(text[i]); i += 1
+    return re.sub(r",\s*([}\]])", r"\1", "".join(out))
+
+
+def _jsonc_object_span(text: str, key: str) -> tuple[int, int] | None:
+    match = re.search(r'"' + re.escape(key) + r'"\s*:', text)
+    if not match: return None
+    start = text.find("{", match.end())
+    if start < 0: return None
+    depth = 0; string = False; i = start
+    while i < len(text):
+        c = text[i]
+        if string:
+            if c == "\\": i += 2; continue
+            if c == '"': string = False
+        elif c == '"': string = True
+        elif c == "{": depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0: return start, i
+        i += 1
+    return None
+
+
+def _jsonc_value_end(text: str, start: int) -> int:
+    depth = 0; string = False; i = start
+    while i < len(text):
+        c = text[i]
+        if string:
+            if c == "\\": i += 2; continue
+            if c == '"': string = False
+        elif c == '"': string = True
+        elif c in "[{": depth += 1
+        elif c in "]}":
+            if depth == 0: return i
+            depth -= 1
+        elif c == "," and depth == 0: return i
+        i += 1
+    return i
+
+
 def install_json_mcp(
     path: Path,
     key: str,
     command: str,
     dry_run: bool,
     entry: dict[str, Any] | None = None,
+    jsonc: bool = False,
 ) -> str:
     payload = entry or {"type": "stdio", "command": command, "args": []}
     if dry_run:
         return f"would write {key}.{SERVER_NAME} -> {path}"
     data: dict[str, Any] = {}
     if path.exists():
+        text = path.read_text()
         try:
-            data = json.loads(path.read_text() or "{}")
+            data = json.loads(_jsonc_clean(text) if jsonc else text or "{}")
         except ValueError:
             return f"skipped (unparseable JSON): {path}"
+        if jsonc:
+            span = _jsonc_object_span(text, key)
+            if span and re.search(r'"groken"\s*:', text[span[0]:span[1]]):
+                return f"already present -> {path}"
+            if span:
+                a, b = span
+                body = text[a + 1:b]
+                indent = re.search(r"\n([ \t]*)[^\n]*$", text[:b]).group(1) if "\n" in text[:b] else "  "
+                has_comma = bool(re.search(r",\s*(?://[^\n]*)?\s*$", body))
+                addition = ("," if body.strip() and not has_comma else "") + f"\n{indent}  \"{SERVER_NAME}\": {json.dumps(payload)}\n{indent}"
+                _backup(path); path.write_text(text[:b] + addition + text[b:]); return f"installed -> {path}"
         _backup(path)
     section = data.get(key)
     if not isinstance(section, dict):
@@ -118,6 +193,24 @@ def _opencode_entry() -> dict[str, Any]:
     return {"type": "local", "command": [mcp_command()], "enabled": True}
 
 
+def _install_opencode(dry_run: bool) -> str:
+    root = HOME / ".config" / "opencode"
+    jsonc = root / "opencode.jsonc"
+    plain = root / "opencode.json"
+    results = []
+    if jsonc.exists():
+        results.append(install_json_mcp(jsonc, "mcpServers", mcp_command(), dry_run, _opencode_entry(), jsonc=True))
+    if plain.exists() or not jsonc.exists():
+        results.append(install_json_mcp(plain, "mcp", mcp_command(), dry_run, _opencode_entry()))
+    return results[-1] if results else f"installed -> {jsonc}"
+
+
+def _uninstall_opencode(dry_run: bool) -> str:
+    root = HOME / ".config" / "opencode"
+    results = [uninstall_json_mcp(root / name, "mcp", dry_run, jsonc=name.endswith("jsonc")) for name in ("opencode.jsonc", "opencode.json")]
+    return next((r for r in results if "removed" in r), results[-1])
+
+
 INSTALLERS: dict[str, tuple[Callable[[], bool], Callable[[bool], str]]] = {
     "claude-code": _json_target(HOME / ".claude.json", "mcpServers"),
     "claude-desktop": _json_target(
@@ -132,9 +225,7 @@ INSTALLERS: dict[str, tuple[Callable[[], bool], Callable[[bool], str]]] = {
     "kiro": _json_target(HOME / ".kiro" / "settings" / "mcp.json", "mcpServers"),
     "opencode": (
         lambda: (HOME / ".config" / "opencode").exists(),
-        lambda dry_run: install_json_mcp(
-            HOME / ".config" / "opencode" / "opencode.json", "mcp", mcp_command(), dry_run, _opencode_entry()
-        ),
+        _install_opencode,
     ),
     "codex": (
         lambda: (HOME / ".codex").exists(),
@@ -155,11 +246,12 @@ INSTALLERS: dict[str, tuple[Callable[[], bool], Callable[[bool], str]]] = {
 }
 
 
-def uninstall_json_mcp(path: Path, key: str, dry_run: bool) -> str:
+def uninstall_json_mcp(path: Path, key: str, dry_run: bool, jsonc: bool = False) -> str:
     if not path.exists():
         return f"not present (no {path})"
+    text = path.read_text()
     try:
-        data = json.loads(path.read_text() or "{}")
+        data = json.loads(_jsonc_clean(text) if jsonc else text or "{}")
     except ValueError:
         return f"skipped (unparseable JSON): {path}"
     section = data.get(key)
@@ -167,6 +259,17 @@ def uninstall_json_mcp(path: Path, key: str, dry_run: bool) -> str:
         return f"not present -> {path}"
     if dry_run:
         return f"would remove {key}.{SERVER_NAME} <- {path}"
+    if jsonc:
+        span = _jsonc_object_span(text, key)
+        if span:
+            section = text[span[0]:span[1]]
+            match = re.search(r'"groken"\s*:', section)
+            if match:
+                begin = span[0] + match.start()
+                value = text.find(":", begin) + 1
+                end = _jsonc_value_end(text, value)
+                if text[end:end + 1] == ",": end += 1
+                _backup(path); path.write_text(text[:begin] + text[end:]); return f"removed <- {path}"
     _backup(path)
     del section[SERVER_NAME]
     data[key] = section
@@ -234,9 +337,7 @@ UNINSTALLERS: dict[str, Callable[[bool], str]] = {
         HOME / "Library" / "Application Support" / "Code" / "User" / "mcp.json", "servers", dry_run
     ),
     "kiro": lambda dry_run: uninstall_json_mcp(HOME / ".kiro" / "settings" / "mcp.json", "mcpServers", dry_run),
-    "opencode": lambda dry_run: uninstall_json_mcp(
-        HOME / ".config" / "opencode" / "opencode.json", "mcp", dry_run
-    ),
+    "opencode": _uninstall_opencode,
     "codex": lambda dry_run: uninstall_toml_mcp(HOME / ".codex" / "config.toml", dry_run),
     "omo": lambda dry_run: uninstall_skill_dir(HOME / ".agents" / "skills", dry_run),
     "claude-skills": lambda dry_run: uninstall_skill_dir(HOME / ".claude" / "skills", dry_run),

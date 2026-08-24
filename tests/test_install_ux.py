@@ -9,6 +9,7 @@ from groken.installers import (
     detected_agents,
     install_all,
     uninstall_all,
+    install_json_mcp,
     uninstall_json_mcp,
 )
 
@@ -29,12 +30,41 @@ def test_uninstall_removes_only_groken_entry(tmp_path):
     assert list(data["mcpServers"]) == ["other"]
 
 
+def test_opencode_jsonc_install_uninstall_preserves_comments(tmp_path):
+    cfg = tmp_path / "opencode.jsonc"
+    original = '''// my comment
+{
+  "mcpServers": {
+    "other": {"command": "keep"}, // trailing after
+  },
+}
+'''
+    cfg.write_text(original)
+    install_json_mcp(cfg, "mcpServers", "groken --mcp", False, jsonc=True)
+    text = cfg.read_text()
+    assert '"other": {"command": "keep"}' in text
+    assert "// my comment" in text and "// trailing after" in text
+    assert '"groken"' in text
+    install_json_mcp(cfg, "mcpServers", "groken --mcp", False, jsonc=True)
+    assert cfg.read_text().count('"groken"') == 1
+    uninstall_json_mcp(cfg, "mcpServers", False, jsonc=True)
+    text = cfg.read_text()
+    assert '"groken"' not in text and '"other": {"command": "keep"}' in text
+    assert "// my comment" in text and "// trailing after" in text
+
+
 def test_uninstall_is_safe_when_absent(tmp_path):
     cfg = tmp_path / "mcp.json"
     cfg.write_text(json.dumps({"mcpServers": {"other": {}}}))
     result = uninstall_json_mcp(cfg, key="mcpServers", dry_run=False)
     assert "not present" in result
     assert list(json.loads(cfg.read_text())["mcpServers"]) == ["other"]
+
+
+def test_jsonc_garbage_is_skipped(tmp_path):
+    cfg = tmp_path / "opencode.jsonc"
+    cfg.write_text("not jsonc")
+    assert "unparseable" in install_json_mcp(cfg, "mcpServers", "x", False, jsonc=True)
 
 
 def test_install_all_requires_explicit_selection():
