@@ -1,5 +1,9 @@
 # groken
 
+## Release 0.2.0
+
+Version 0.2.0 adds the native execution and diagnostics surfaces described below.
+
 Real-time bridge into Grok Bot chat, built as a protocol-faithful client of the
 official desktop app: genuine Cursor OAuth PKCE login (`redirectTarget=sand`),
 app-identical headers/checksum, and the same per-sandbox gateway the app uses.
@@ -40,14 +44,41 @@ cd ~/groken
 ## CLI
 
 ```bash
-.venv/bin/groken agents               # list Bots (id, name, running)
-.venv/bin/groken send "text" [agent]  # send (default: groken's own Bot)
-.venv/bin/groken ask "text" [agent]   # send and wait for the reply
-.venv/bin/groken tail [agent]         # recent transcript entries
-.venv/bin/groken agents               # list Bots (id, name, running)
-.venv/bin/groken events               # raw SSE event stream
-.venv/bin/groken sandboxes            # cloud computer status (aiserver)
-.venv/bin/groken refresh              # refresh tokens manually
+.venv/bin/groken agents                         # list Bots (id, name, running)
+.venv/bin/groken send "text" [agent]            # send, without waiting
+.venv/bin/groken ask "text" [agent]             # send and wait for the reply
+.venv/bin/groken ask "text" --stream            # stream reply chunks to a TTY
+.venv/bin/groken tail [agent]                   # recent transcript entries
+.venv/bin/groken tail [agent] -n 50 --json      # structured, bounded output
+.venv/bin/groken tail [agent] --since TIMESTAMP  # entries after an ISO timestamp
+.venv/bin/groken tail [agent] --full             # include complete entry bodies
+.venv/bin/groken exec COMMAND [--cwd DIR]       # native remote command execution
+.venv/bin/groken service install                # install controller and tunnel services
+.venv/bin/groken service status                 # show service presence
+.venv/bin/groken service uninstall              # remove groken services
+.venv/bin/groken inspect-app                    # compare app command table with groken
+.venv/bin/groken inspect-app --fail-on-drift    # exit nonzero when drift is found
+.venv/bin/groken vnc                             # print a minted VNC URL
+.venv/bin/groken vnc --open                     # mint and open the VNC URL
+.venv/bin/groken doctor                         # run tiered diagnostics
+.venv/bin/groken events                         # raw SSE event stream
+.venv/bin/groken sandboxes                      # cloud computer status
+.venv/bin/groken refresh                        # refresh tokens manually
+```
+
+`tail --json` emits structured entries. Use `-n` or `--limit` to bound the
+result, `--since` to filter by timestamp, and `--full` when abbreviated bodies
+are not enough. `ask --stream` is intended for interactive terminals and falls
+back to the normal reply when output is not a TTY.
+
+`doctor` runs seven secret-safe tiers: tokens, gateway, controller, model,
+execDaemon, pod identity, and MCP self-handshake. It continues through soft
+failures and returns failure when authentication or the gateway is unavailable.
+`inspect-app` checks the installed app bundle for command-table drift.
+
+`exec` and `vnc` use the native-mcp operation plane only. They never fall back to
+the gateway or another plane. Native execution is remote, so review the command,
+working directory, and timeout before running it.
 
 ## Dedicated Bot (auto-provisioned)
 

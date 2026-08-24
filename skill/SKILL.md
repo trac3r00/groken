@@ -19,11 +19,27 @@ Bots unless the user explicitly names one.
 
 CLI (direct):
 ```bash
-~/groken/.venv/bin/groken agents          # roster
-~/groken/.venv/bin/groken ask "task"      # send + wait for reply (default Bot)
-~/groken/.venv/bin/groken send "task"     # fire-and-forget
-~/groken/.venv/bin/groken tail            # recent transcript
+~/groken/.venv/bin/groken agents                 # roster
+~/groken/.venv/bin/groken ask "task"             # send + wait for reply (default Bot)
+~/groken/.venv/bin/groken ask "task" --stream    # stream reply chunks to a TTY
+~/groken/.venv/bin/groken send "task"            # fire-and-forget
+~/groken/.venv/bin/groken tail                   # recent transcript
+~/groken/.venv/bin/groken tail -n 50 --json      # structured transcript entries
+~/groken/.venv/bin/groken tail --since TIMESTAMP # entries after a timestamp
+~/groken/.venv/bin/groken tail --full            # complete entry bodies
+~/groken/.venv/bin/groken exec COMMAND           # native remote command execution
+~/groken/.venv/bin/groken service install        # install launchd services
+~/groken/.venv/bin/groken service status         # inspect service presence
+~/groken/.venv/bin/groken service uninstall      # remove launchd services
+~/groken/.venv/bin/groken inspect-app            # inspect app command-table drift
+~/groken/.venv/bin/groken vnc                   # mint a VNC URL
+~/groken/.venv/bin/groken doctor                # run tiered diagnostics
 ```
+
+`exec` and `vnc` are native-mcp only. They never fall back to the gateway or
+another operation plane. Review native execution commands before sending them.
+`doctor` checks seven tiers, tokens, gateway, controller, model, execDaemon, pod
+identity, and MCP handshake, while continuing through soft failures.
 
 MCP (any host — stdio, streamable HTTP, or SSE; see the MCP server section):
 - `grok_bot_ask(text, bot?, timeout_s?)` — request/response; the primary tool
@@ -63,6 +79,17 @@ Pain-point research behind the design: `docs/painpoints-2026-08-19.md`.
   the sandbox is recovering — retry after a minute.
 - App update broke calls? Re-extract `app.asar` from the newest DMG (x.ai/bot)
   and diff the gateway command table; client version auto-tracks the app.
+
+## Pain-points mapping
+
+| Pain point | Surface or guardrail |
+|---|---|
+| Context loss during long work | `ask --stream` gives immediate progress; `tail --json`, `--since`, and `--full` preserve readable transcript state |
+| Runaway loops and destructive commands | `exec` is native-mcp only, with no plane fallback; the dedicated Bot must verify state and ask before destructive actions |
+| Cost and outage anxiety | `doctor` reports tiered health checks and actionable failures |
+| App and protocol drift | `inspect-app` compares the installed app command table and can fail with `--fail-on-drift` |
+| Cloud computer access | `vnc` mints an authenticated URL and never falls back to another plane |
+| Persistent local operations | `service install`, `service status`, and `service uninstall` manage the controller and tunnel services |
 
 Internals, architecture, and tests: `~/groken/README.md`
 (`cd ~/groken && .venv/bin/python -m pytest tests/`).
