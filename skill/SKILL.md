@@ -13,13 +13,21 @@ app-identical gateway commands). Work runs on the Bot's persistent cloud VM.
 All calls go to groken's **own dedicated Bot** (auto-created on first use,
 default name `groken`, customize via `~/.config/groken/config.json`
 `{"bot_name": "..."}` or env `GROKEN_BOT_NAME`). Never touch the user's other
-Bots unless the user explicitly names one.
+Bots unless the user explicitly names one. This binding is local to each machine;
+multiple installations may share the same account Bot or set different
+`GROKEN_BOT_NAME` values without changing one another's local config.
 
 ## Use it
 
 CLI (direct):
 ```bash
-~/groken/.venv/bin/groken agents                 # roster
+~/groken/.venv/bin/groken list                   # roster; * marks configured default
+~/groken/.venv/bin/groken configure [BOT]        # choose this machine's default Bot
+~/groken/.venv/bin/groken connect [BOT]          # auto-connect configured/named Bot VNC
+~/groken/.venv/bin/groken status                 # host, storage, and MCP health
+~/groken/.venv/bin/groken tools list [SERVER...] # discover connected plugin tools
+~/groken/.venv/bin/groken tools call SERVER TOOL --args-json '{}' --yes
+~/groken/.venv/bin/groken agents                 # legacy raw roster
 ~/groken/.venv/bin/groken ask "task"             # send + wait for reply (default Bot)
 ~/groken/.venv/bin/groken ask "task" --stream    # stream reply chunks to a TTY
 ~/groken/.venv/bin/groken send "task"            # fire-and-forget
@@ -32,12 +40,22 @@ CLI (direct):
 ~/groken/.venv/bin/groken service status         # inspect service presence
 ~/groken/.venv/bin/groken service uninstall      # remove launchd services
 ~/groken/.venv/bin/groken inspect-app            # inspect app command-table drift
-~/groken/.venv/bin/groken vnc                   # mint a VNC URL
+~/groken/.venv/bin/groken vnc                   # open configured Bot's computer and auto-connect
+~/groken/.venv/bin/groken vnc --display 1       # explicitly override with display N
 ~/groken/.venv/bin/groken doctor                # run tiered diagnostics
 ```
 
-`exec` and `vnc` are native-mcp only. They never fall back to the gateway or
-another operation plane. Review native execution commands before sending them.
+`vnc` resolves the locally configured Bot, reads that Bot's official computer
+status, ensures its computer when absent, waits for live RFB, and opens noVNC
+with autoconnect enabled. `--display N` is an explicit override.
+
+`status` is secret-safe. `tools list` keeps OAuth credentials on the Grok
+backend. Every `tools call` requires an interactive confirmation or `--yes`;
+never retry an indeterminate mutating call unless repetition is safe.
+
+`exec` is native-mcp only. `vnc` uses the configured Bot's gateway computer status
+plus a local token-injecting proxy; it never guesses from another Bot's Chrome
+process. Review native execution commands before sending them.
 `doctor` checks seven tiers, tokens, gateway, controller, model, execDaemon, pod
 identity, and MCP handshake, while continuing through soft failures.
 
@@ -45,6 +63,8 @@ MCP (any host — stdio, streamable HTTP, or SSE; see the MCP server section):
 - `grok_bot_ask(text, bot?, timeout_s?)` — request/response; the primary tool
 - `grok_bot_send(text, bot?)` — fire-and-forget
 - `grok_bot_list()` / `grok_bot_tail(bot?)`
+- `grok_plugin_list(server?)` — discover backend plugin tools
+- `grok_plugin_call(server, tool, arguments_json, bot?, confirmed?)` — blocked until `confirmed=true`
 
 ## Latency expectations
 

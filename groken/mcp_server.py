@@ -2,12 +2,13 @@ import asyncio
 import functools
 import inspect
 import json
+import uuid
 
 import httpx
 from mcp.server.mcpserver import MCPServer
 
 from .capabilities import capability_manifest, live_read_only_status
-from .client import ConnectError
+from .client import ConnectError, SandClient
 from .errors import explain_error
 from .gateway import GatewayManager
 
@@ -67,6 +68,50 @@ def grok_bot_capabilities(include_commands: bool = False) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def grok_plugin_list(server: str | None = None) -> str:
+    """List backend tools from the user's connected Grok Bot plugins. Optionally filter by server identifier such as user-Gmail."""
+    from .plugin_tools import render_tool_catalog
+
+    payload = SandClient().list_sand_mcp_tools([] if server is None else [server])
+    return render_tool_catalog(payload)
+
+
+def grok_plugin_call(
+    server: str,
+    tool: str,
+    arguments_json: str = "{}",
+    bot: str | None = None,
+    confirmed: bool = False,
+) -> str:
+    """Execute a connected plugin tool only after explicit confirmation. Set confirmed=true only when the user requested this exact server/tool/arguments operation."""
+    if not confirmed:
+        return "Plugin execution blocked: review the exact server, tool, and arguments with the user, then retry with confirmed=true."
+    from .plugin_tools import parse_arguments_json, resolve_catalog_tool_name
+
+    try:
+        arguments = parse_arguments_json(arguments_json)
+    except (TypeError, ValueError) as exc:
+        return f"Plugin execution blocked: {exc}."
+    manager = GatewayManager()
+    client = SandClient()
+    try:
+        canonical_name = resolve_catalog_tool_name(
+            client.list_sand_mcp_tools([server]),
+            tool,
+            server,
+        )
+    except (TypeError, ValueError) as exc:
+        return f"Plugin execution blocked: {exc}."
+    result = client.execute_sand_mcp_tool(
+        server_identifier=server,
+        tool_name=canonical_name,
+        arguments=arguments,
+        tool_call_id=str(uuid.uuid4()),
+        agent_id=_resolve(manager, bot),
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
 def grok_bot_tail(bot: str | None = None, limit: int = 15, full: bool = False) -> str:
     """Read structured recent transcript entries. Defaults to the dedicated groken Bot."""
     mgr = GatewayManager()
@@ -86,6 +131,8 @@ for fn in (
     grok_bot_ask,
     grok_bot_capabilities,
     grok_bot_tail,
+    grok_plugin_list,
+    grok_plugin_call,
 ):
     wrapped = _translate_tool_errors(fn)
     globals()[fn.__name__] = wrapped

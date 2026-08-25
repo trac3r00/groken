@@ -17,6 +17,21 @@ def test_worker_description_carries_guardrails():
         assert needle in WORKER_DESCRIPTION.lower(), f"missing guardrail: {needle}"
 
 
+def test_cached_bot_must_match_configured_name(monkeypatch):
+    agents = [
+        {"id": "top-id", "name": "top-bot", "description": WORKER_DESCRIPTION},
+        {"id": "groken-id", "name": "groken", "description": WORKER_DESCRIPTION},
+    ]
+    mgr, _calls = _mgr(agents)
+    remembered: list[tuple[str, str]] = []
+    monkeypatch.setattr(gw_mod, "cached_bot_id", lambda: "top-id")
+    monkeypatch.setattr(gw_mod, "bot_name", lambda: "groken")
+    monkeypatch.setattr(gw_mod, "remember_bot", lambda i, n: remembered.append((i, n)))
+
+    assert mgr.own_agent_id() == "groken-id"
+    assert remembered == [("groken-id", "groken")]
+
+
 def test_existing_own_bot_gets_description_upgraded(monkeypatch):
     mgr, calls = _mgr([{"id": "u9", "name": "groken", "description": "old"}])
     monkeypatch.setattr(gw_mod, "cached_bot_id", lambda: None)

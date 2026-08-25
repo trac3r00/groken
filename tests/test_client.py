@@ -42,6 +42,52 @@ def test_unary_headers_and_body(monkeypatch):
     assert seen["body"] == {}
 
 
+def test_plugin_discovery_uses_dashboard_rpc(monkeypatch):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"servers": []})
+
+    client = make_client(handler, monkeypatch)
+    assert client.list_sand_mcp_tools(["user-Gmail"]) == {"servers": []}
+    assert seen == {
+        "url": "https://api2.cursor.sh/aiserver.v1.DashboardService/ListSandMcpTools",
+        "body": {"serverIdentifiers": ["user-Gmail"]},
+    }
+
+
+def test_plugin_execution_uses_structured_dashboard_payload(monkeypatch):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"result": {"result": {"case": "success", "value": {"content": []}}}})
+
+    client = make_client(handler, monkeypatch)
+    result = client.execute_sand_mcp_tool(
+        server_identifier="user-X",
+        tool_name="search",
+        arguments={"query": "grok"},
+        tool_call_id="call-1",
+        agent_id="agent-1",
+    )
+
+    assert result["result"]["result"]["case"] == "success"
+    assert seen == {
+        "url": "https://api2.cursor.sh/aiserver.v1.DashboardService/ExecuteSandMcpTool",
+        "body": {
+            "serverIdentifier": "user-X",
+            "toolName": "search",
+            "args": {"query": "grok"},
+            "toolCallId": "call-1",
+            "agentId": "agent-1",
+        },
+    }
+
+
 def test_401_triggers_single_refresh(monkeypatch):
     calls = []
 

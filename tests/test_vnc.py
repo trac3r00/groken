@@ -1,6 +1,6 @@
 import pytest
 
-from groken.vnc import mint_jwt, vnc_url
+from groken.vnc import display_from_forever_box, mint_jwt, vnc_url
 
 
 def test_mint_jwt_hmac_vector():
@@ -15,7 +15,37 @@ def test_mint_jwt_hmac_vector():
 def test_url_uses_metadata_host_and_does_not_require_token_output():
     url = vnc_url({"vncUrl": "https://tenant-pod-6080.us.cursorvm.com/vnc.html", "networkToken": "secret", "podId": "pod"}, 1700000000)
     assert url.startswith("https://tenant-pod-6080.us.cursorvm.com/vnc.html?port_token=")
+    assert "autoconnect=1" in url
     assert "secret" not in url
+
+
+def test_fork_url_targets_requested_display() -> None:
+    url = vnc_url(
+        {
+            "vncUrl": "https://tenant-pod-6080.us.cursorvm.com/vnc.html",
+            "forkVncBaseUrl": "https://tenant-pod-6081.us.cursorvm.com",
+            "networkToken": "secret",
+            "podId": "pod",
+        },
+        1700000000,
+        display=2,
+    )
+
+    assert url.startswith("https://tenant-pod-6081.us.cursorvm.com/vnc.html?port_token=")
+    assert "path=websockify%3Ftoken%3D2" in url
+    assert "autoconnect=1" in url
+
+
+def test_display_comes_from_configured_bots_forever_box() -> None:
+    assert display_from_forever_box(
+        {
+            "agentId": "groken-id",
+            "state": "running",
+            "vncUrl": "http://127.0.0.1:6081/vnc.html?path=websockify%3Ftoken%3D7",
+        }
+    ) == 7
+    assert display_from_forever_box({"state": "absent", "vncUrl": None}) is None
+    assert display_from_forever_box({"state": "running", "vncUrl": "not-a-vnc-url"}) is None
 
 
 def test_missing_vnc_url_is_clear():

@@ -37,14 +37,24 @@ Uninstall: delete `~/groken`, `~/.config/groken/`, the `groken` entry in
 
 ```bash
 cd ~/groken
-.venv/bin/groken login     # opens cursor.com; sign in with the Grok Bot account
-.venv/bin/groken bots      # list Bots -> bcId
+.venv/bin/groken login             # sign in with the Grok Bot account
+.venv/bin/groken list              # * marks this machine's configured Bot
+.venv/bin/groken configure         # choose interactively
+.venv/bin/groken configure groken  # or choose by name/id
+.venv/bin/groken connect           # open the configured Bot's computer
+.venv/bin/groken connect repo-ops  # one-off connection; default is unchanged
 ```
 
 ## CLI
 
 ```bash
-.venv/bin/groken agents                         # list Bots (id, name, running)
+.venv/bin/groken list                           # list Bots; * marks configured default
+.venv/bin/groken configure [BOT]                # set this machine's default Bot
+.venv/bin/groken connect [BOT]                  # auto-connect configured/named Bot VNC
+.venv/bin/groken status                         # Bot, host, storage, secrets, and MCP health
+.venv/bin/groken tools list [SERVER ...]        # discover connected plugin tools
+.venv/bin/groken tools call SERVER TOOL --args-json '{}' --yes
+.venv/bin/groken agents                         # legacy raw roster
 .venv/bin/groken send "text" [agent]            # send, without waiting
 .venv/bin/groken ask "text" [agent]             # send and wait for the reply
 .venv/bin/groken ask "text" --stream            # stream reply chunks to a TTY
@@ -58,13 +68,23 @@ cd ~/groken
 .venv/bin/groken service uninstall              # remove groken services
 .venv/bin/groken inspect-app                    # compare app command table with groken
 .venv/bin/groken inspect-app --fail-on-drift    # exit nonzero when drift is found
-.venv/bin/groken vnc                             # print a minted VNC URL
-.venv/bin/groken vnc --open                     # mint and open the VNC URL
+.venv/bin/groken vnc                             # open configured Bot's computer and auto-connect
+.venv/bin/groken vnc --display 1                 # explicitly override with display N
 .venv/bin/groken doctor                         # run tiered diagnostics
 .venv/bin/groken events                         # raw SSE event stream
 .venv/bin/groken sandboxes                      # cloud computer status
 .venv/bin/groken refresh                        # refresh tokens manually
 ```
+
+`status` is secret-safe: it reports the configured Bot display, host/update
+state, box storage, secret application state, and broken/connected box MCP
+servers without returning secret names or values.
+
+`tools list` queries the backend plugin catalog using the existing Grok Bot
+session; plugin OAuth tokens remain backend-side. `tools call` executes one
+exact server/tool/JSON operation and always requires interactive confirmation
+or explicit `--yes`. A timeout may be indeterminate for mutating tools, so do
+not retry unless repeating the operation is safe.
 
 `tail --json` emits structured entries. Use `-n` or `--limit` to bound the
 result, `--since` to filter by timestamp, and `--full` when abbreviated bodies
@@ -76,9 +96,15 @@ execDaemon, pod identity, and MCP self-handshake. It continues through soft
 failures and returns failure when authentication or the gateway is unavailable.
 `inspect-app` checks the installed app bundle for command-table drift.
 
-`exec` and `vnc` use the native-mcp operation plane only. They never fall back to
-the gateway or another plane. Native execution is remote, so review the command,
-working directory, and timeout before running it.
+`vnc` resolves the locally configured Bot, reads that Bot's official
+`getForeverBoxStatus`, ensures its computer when absent, waits for a live RFB
+connection, and opens noVNC with autoconnect enabled. Use `--display N` only to
+explicitly override the Bot-derived display.
+
+`exec` uses the native-mcp operation plane. `vnc` uses the Bot gateway's computer
+status plus a token-injecting loopback proxy; it never asks another Bot or guesses
+from account-wide Chrome processes. Native execution is remote, so review the
+command, working directory, and timeout before running it.
 
 ## Dedicated Bot (auto-provisioned)
 
@@ -86,7 +112,10 @@ First use creates a Bot named `groken` on the account (gateway `createAgent`,
 idempotent via clientNonce) and caches its id in `~/.config/groken/config.json`.
 All CLI/MCP calls default to it; the user's other Bots are never touched unless
 explicitly named. Custom name: `{"bot_name": "..."}` in config.json or
-`GROKEN_BOT_NAME` env.
+`GROKEN_BOT_NAME` env. The config is local to each installation, so multiple
+machines can bind to the same account Bot or choose different names independently.
+Each machine runs its own loopback VNC proxy; concurrent viewers are supported by
+the shared cloud desktop.
 
 ## What groken connects
 
@@ -168,7 +197,7 @@ groken-mcp --transport http --port 8321     # streamable HTTP  -> http://127.0.0
 groken-mcp --transport sse  --port 8322     # legacy SSE       -> http://127.0.0.1:8322/sse
 ```
 
-All three transports serve the same four tools. stdio config (most hosts):
+All three transports serve the same seven tools. stdio config (most hosts):
 
 ```json
 { "mcpServers": { "groken": { "command": "/Users/bob/groken/.venv/bin/groken-mcp" } } }
@@ -179,9 +208,11 @@ older SSE-only clients use `http://<host>:8322/sse`. Bind beyond localhost with
 `--host 0.0.0.0` only behind your own auth layer — the server itself is unauthenticated
 and inherits your Grok Bot session.
 
-Tools: `grok_bot_list`, `grok_bot_send`, `grok_bot_ask` (send + wait for reply),
-`grok_bot_tail`. All accept a Bot id or its display name; omit it to use the
-dedicated groken Bot.
+Bot tools: `grok_bot_list`, `grok_bot_send`, `grok_bot_ask`,
+`grok_bot_capabilities`, and `grok_bot_tail`. Plugin tools:
+`grok_plugin_list` and `grok_plugin_call`; calls are blocked until
+`confirmed=true` is supplied for the exact reviewed operation. Bot arguments
+accept an id or display name; omit them to use the dedicated groken Bot.
 
 ## Remote OMO worker
 

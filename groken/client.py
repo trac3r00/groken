@@ -42,6 +42,7 @@ def detect_client_version() -> str:
     return "0.20.0"
 
 GROK_BOT = "aiserver.v1.GrokBotService"
+DASHBOARD = "aiserver.v1.DashboardService"
 
 
 class ConnectError(Exception):
@@ -95,3 +96,31 @@ class SandClient:
 
     def list_sandboxes(self) -> dict[str, Any]:
         return self.unary(GROK_BOT, "ListSandBoxes", {})
+
+    def list_sand_mcp_tools(self, server_identifiers: list[str] | None = None) -> dict[str, Any]:
+        return self.unary(
+            DASHBOARD,
+            "ListSandMcpTools",
+            {"serverIdentifiers": list(server_identifiers or [])},
+        )
+
+    def execute_sand_mcp_tool(
+        self,
+        *,
+        server_identifier: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        tool_call_id: str,
+        agent_id: str,
+    ) -> dict[str, Any]:
+        return self.unary(
+            DASHBOARD,
+            "ExecuteSandMcpTool",
+            {
+                "serverIdentifier": server_identifier,
+                "toolName": tool_name,
+                "args": arguments,
+                "toolCallId": tool_call_id,
+                "agentId": agent_id,
+            },
+        )

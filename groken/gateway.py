@@ -485,10 +485,12 @@ class GatewayManager:
 
     def own_agent_id(self) -> str:
         cached = cached_bot_id()
-        agents = self.command("listAgents")
-        if cached and any(a.get("id") == cached for a in agents):
-            return cached
         name = bot_name()
+        agents = self.command("listAgents")
+        if cached and any(
+            a.get("id") == cached and a.get("name") == name for a in agents
+        ):
+            return cached
         for a in agents:
             if a.get("name") == name:
                 agent_id = str(a["id"])
