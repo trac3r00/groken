@@ -1,6 +1,6 @@
 [project]
 name = "groken"
-version = "0.2.0"
+version = "0.3.0"
 description = "Protocol-faithful bridge to Grok Bot chat (Cursor aiserver Connect-RPC)"
 requires-python = ">=3.11"
 dependencies = ["httpx>=0.27"]

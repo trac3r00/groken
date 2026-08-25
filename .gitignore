@@ -2,6 +2,11 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
+.coverage
+.coverage.*
+htmlcov/
 .pytest_cache/
 .ruff_cache/
 .omo/

@@ -1,8 +1,9 @@
 # groken
 
-## Release 0.2.0
+## Release 0.3.0
 
-Version 0.2.0 adds the native execution and diagnostics surfaces described below.
+Version 0.3.0 adds configured Bot control, status and plugin tooling, and a
+ready-checked VNC flow that opens the selected Bot's desktop in the browser.
 
 Real-time bridge into Grok Bot chat, built as a protocol-faithful client of the
 official desktop app: genuine Cursor OAuth PKCE login (`redirectTarget=sand`),
