@@ -1,13 +1,13 @@
 import asyncio
 import base64
 import json
+import logging
 from typing import Literal, cast
-
-ExecServiceClient = None
 
 from mcp.server.mcpserver import MCPServer
 
 from .config import vnc_enabled
+from .exec_service import ExecServiceClient
 from .native_client import NativeControllerClient
 from .native_models import (
     FileDelete,
@@ -242,22 +242,22 @@ def native_process_kill(
 
 async def direct_cloud_exec(command: str) -> str:
     """Execute a command directly, bypassing the durable queue."""
-    global ExecServiceClient
-    if ExecServiceClient is None:
-        from .exec_service import ExecServiceClient as client_type
-
-        ExecServiceClient = client_type
     client = ExecServiceClient()
     result = await client.execute(command)
-    stdout = result.stdout
-    stderr = result.stderr
-    return json.dumps({"stdout": stdout, "stderr": stderr})
+    return json.dumps(
+        {
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+        }
+    )
 
 
 def native_vnc_url() -> str:
     """Mint the current sandbox's noVNC URL when the capability is enabled."""
     from .gateway import GatewayManager
     from .vnc import vnc_url
+
     return vnc_url(GatewayManager().ensure_sandbox_metadata())
 
 
@@ -292,8 +292,12 @@ if vnc_enabled():
 def main() -> None:
     import argparse
 
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     parser = argparse.ArgumentParser(prog="groken-native-mcp")
-    _ = parser.add_argument("--transport", choices=["stdio", "sse", "http"], default="stdio")
+    _ = parser.add_argument(
+        "--transport", choices=["stdio", "sse", "http"], default="stdio"
+    )
     _ = parser.add_argument("--host", default="127.0.0.1")
     _ = parser.add_argument("--port", type=int, default=8323)
     args = parser.parse_args()

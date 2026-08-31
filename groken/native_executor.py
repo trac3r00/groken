@@ -6,10 +6,11 @@ import signal
 import subprocess
 import uuid
 from pathlib import Path
-from typing import final
+from typing import Final, final
 
 import anyio
 from anyio import to_thread
+from anyio.abc import ByteReceiveStream, Process
 
 from .native_models import (
     MAX_OUTPUT_BYTES,
@@ -27,6 +28,110 @@ from .native_models import (
     TerminalExec,
     TerminalShell,
 )
+
+_TERMINATION_GRACE_SECONDS: Final = 1.0
+
+
+@final
+class _OutputCapture:
+    __slots__: Final = ("data", "truncated")
+
+    data: bytearray
+    truncated: bool
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.truncated = False
+
+    def append(self, chunk: bytes) -> None:
+        remaining = MAX_OUTPUT_BYTES - len(self.data)
+        if remaining > 0:
+            self.data.extend(chunk[:remaining])
+        if len(chunk) > remaining:
+            self.truncated = True
+
+
+@final
+class _CommandState:
+    __slots__: Final = (
+        "completed",
+        "process",
+        "stderr",
+        "stdout",
+        "terminating",
+        "timed_out",
+    )
+
+    completed: anyio.Event
+    process: Process
+    stderr: _OutputCapture
+    stdout: _OutputCapture
+    terminating: bool
+    timed_out: bool
+
+    def __init__(self, process: Process) -> None:
+        self.process = process
+        self.stdout = _OutputCapture()
+        self.stderr = _OutputCapture()
+        self.completed = anyio.Event()
+        self.terminating = False
+        self.timed_out = False
+
+    async def communicate(self, stdin: bytes) -> None:
+        with anyio.CancelScope(shield=True):
+            try:
+                async with anyio.create_task_group() as task_group:
+                    if self.process.stdout is not None:
+                        _ = task_group.start_soon(
+                            self._drain,
+                            self.process.stdout,
+                            self.stdout,
+                        )
+                    if self.process.stderr is not None:
+                        _ = task_group.start_soon(
+                            self._drain,
+                            self.process.stderr,
+                            self.stderr,
+                        )
+                    if self.process.stdin is not None:
+                        try:
+                            await self.process.stdin.send(stdin)
+                        except (anyio.BrokenResourceError, anyio.ClosedResourceError):
+                            if not self.terminating:
+                                raise
+                        await self.process.stdin.aclose()
+                    _ = await self.process.wait()
+            finally:
+                self.completed.set()
+
+    async def enforce_timeout(self, timeout_seconds: float) -> None:
+        with anyio.move_on_after(timeout_seconds) as timeout_scope:
+            await self.completed.wait()
+        if not timeout_scope.cancel_called:
+            return
+
+        self.timed_out = True
+        await self.terminate_process_group()
+
+    async def terminate_process_group(self) -> None:
+        self.terminating = True
+        self._signal_process_group(signal.SIGTERM)
+        with anyio.move_on_after(_TERMINATION_GRACE_SECONDS):
+            await self.completed.wait()
+        self._signal_process_group(signal.SIGKILL)
+        await self.completed.wait()
+
+    def _signal_process_group(self, signal_number: int) -> None:
+        try:
+            os.killpg(self.process.pid, signal_number)
+        except ProcessLookupError:
+            return
+
+    @staticmethod
+    async def _drain(stream: ByteReceiveStream, capture: _OutputCapture) -> None:
+        async with stream:
+            async for chunk in stream:
+                capture.append(chunk)
 
 
 @final
@@ -56,37 +161,36 @@ class NativeExecutor:
         stdin = base64.b64decode(operation.stdin_b64)
         environment = dict(os.environ)
         environment.update(operation.env)
-        try:
-            with anyio.fail_after(operation.timeout_ms / 1000):
-                process = await anyio.run_process(
-                    operation.argv,
-                    input=stdin,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=cwd,
-                    env=environment,
-                    check=False,
-                    start_new_session=True,
+        async with await anyio.open_process(
+            operation.argv,
+            stdin=subprocess.PIPE if stdin else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            env=environment,
+            start_new_session=True,
+        ) as process:
+            state = _CommandState(process)
+            async with anyio.create_task_group() as task_group:
+                _ = task_group.start_soon(state.communicate, stdin)
+                _ = task_group.start_soon(
+                    state.enforce_timeout,
+                    operation.timeout_ms / 1000,
                 )
-        except TimeoutError:
-            return {
-                "type": operation.type,
-                "exit_code": None,
-                "stdout_b64": "",
-                "stderr_b64": "",
-                "timed_out": True,
-                "truncated": False,
-            }
-        stdout = process.stdout or b""
-        stderr = process.stderr or b""
-        truncated = len(stdout) > MAX_OUTPUT_BYTES or len(stderr) > MAX_OUTPUT_BYTES
+                try:
+                    await state.completed.wait()
+                except anyio.get_cancelled_exc_class():
+                    with anyio.CancelScope(shield=True):
+                        await state.terminate_process_group()
+                    raise
+
         return {
             "type": operation.type,
-            "exit_code": process.returncode,
-            "stdout_b64": base64.b64encode(stdout[:MAX_OUTPUT_BYTES]).decode(),
-            "stderr_b64": base64.b64encode(stderr[:MAX_OUTPUT_BYTES]).decode(),
-            "timed_out": False,
-            "truncated": truncated,
+            "exit_code": None if state.timed_out else process.returncode,
+            "stdout_b64": base64.b64encode(state.stdout.data).decode(),
+            "stderr_b64": base64.b64encode(state.stderr.data).decode(),
+            "timed_out": state.timed_out,
+            "truncated": state.stdout.truncated or state.stderr.truncated,
         }
 
     async def _terminal_shell(

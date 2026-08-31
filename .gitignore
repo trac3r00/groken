@@ -9,5 +9,7 @@ dist/
 htmlcov/
 .pytest_cache/
 .ruff_cache/
+.artifacts/
 .omo/
+.fablize/
 .DS_Store

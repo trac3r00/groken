@@ -18,10 +18,11 @@ def mint_jwt(
     now: float | None = None,
     *,
     container_port: int = 6080,
+    ttl_s: int = 600,
 ) -> str:
     current = int(time.time() if now is None else now)
     header = {"alg": "HS256", "typ": "JWT"}
-    claims = {"aud": tenant_id, "exp": current + 600, "nbf": current - 10,
+    claims = {"aud": tenant_id, "exp": current + ttl_s, "nbf": current - 10,
               "pod_id": pod_id, "container_port": container_port, "iat": current}
     encoded = f"{_b64(json.dumps(header, separators=(',', ':')).encode())}.{_b64(json.dumps(claims, separators=(',', ':')).encode())}"
     signature = hmac.new(network_token.encode(), encoded.encode(), hashlib.sha256).digest()
@@ -46,6 +47,7 @@ def vnc_url(
     now: float | None = None,
     *,
     display: int = 1,
+    ttl_s: int = 600,
 ) -> str:
     if display < 1:
         raise ValueError("display must be at least 1")
@@ -66,7 +68,14 @@ def vnc_url(
     if not isinstance(token, str) or not isinstance(pod_id, str):
         raise TypeError("sandbox metadata is missing networkToken or podId")
     container_port = 6080 if display == 1 else 6081
-    jwt = mint_jwt(token, tenant_id, pod_id, now, container_port=container_port)
+    jwt = mint_jwt(
+        token,
+        tenant_id,
+        pod_id,
+        now,
+        container_port=container_port,
+        ttl_s=ttl_s,
+    )
     viewer_path = "" if display == 1 else f"&path={quote(f'websockify?token={display}', safe='')}"
     return (
         f"{parsed.scheme or 'https'}://{host}/vnc.html?port_token={jwt}"

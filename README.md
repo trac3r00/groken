@@ -343,7 +343,6 @@ E2E proof.
 - [Native operation plane](docs/native-operation-plane.md)
 - [Remote worker runbook](docs/direct-worker-runbook.md)
 - [Provider E2E runbook](docs/provider-e2e-runbook.md)
-- [Guardrail design research](docs/painpoints-2026-08-19.md)
 - [Installable agent skill](skill/SKILL.md)
 
 Run `groken --help` or any subcommand with `--help` for the current command

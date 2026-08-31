@@ -25,6 +25,11 @@ from .native_controller import (
     NativeEmitter,
     create_native_router,
 )
+from .team_alerts import (
+    TeamAlertEmitter,
+    TeamAlertSettings,
+    create_team_alert_router,
+)
 from .worker_models import JobRecord, JobStatus
 
 
@@ -38,6 +43,7 @@ class ControllerSettings:
     model_api_key: str
     model: str
     lease_seconds: int = 3600
+    team_alert_team: str = ""
 
 
 class CompletionEmitter(Protocol):
@@ -71,6 +77,7 @@ def create_controller_app(
     *,
     emitter: CompletionEmitter | None = None,
     native_emitter: NativeEmitter | None = None,
+    team_alert_emitter: TeamAlertEmitter | None = None,
 ) -> FastAPI:
     store = ControllerStore(settings.state_dir, lease_seconds=settings.lease_seconds)
     completion_emitter = emitter or ClawhipCompletionEmitter()
@@ -199,4 +206,14 @@ def create_controller_app(
             emitter=native_emitter,
         )
     )
+    if settings.team_alert_team:
+        app.include_router(
+            create_team_alert_router(
+                TeamAlertSettings(
+                    bearer_token=settings.worker_token,
+                    team=settings.team_alert_team,
+                ),
+                emitter=team_alert_emitter,
+            )
+        )
     return app

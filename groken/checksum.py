@@ -10,6 +10,8 @@ import time
 import uuid as uuidlib
 from pathlib import Path
 
+from .private_files import write_private_text
+
 _STATE_DIR = Path.home() / ".config" / "groken"
 _MACHINE_ID_FILE = _STATE_DIR / "machine_id"
 
@@ -24,7 +26,9 @@ def _enhanced_obfuscate(data: bytes) -> bytes:
 
 
 def create_cursor_checksum(machine_id: str, now_ms: float | None = None) -> str:
-    unix_kilo_seconds = int((now_ms if now_ms is not None else time.time() * 1000) // 1_000_000)
+    unix_kilo_seconds = int(
+        (now_ms if now_ms is not None else time.time() * 1000) // 1_000_000
+    )
     raw = unix_kilo_seconds.to_bytes(6, "big")
     obfuscated = _enhanced_obfuscate(raw)
     checksum = base64.urlsafe_b64encode(obfuscated).decode().rstrip("=")
@@ -45,10 +49,8 @@ def get_machine_id() -> str:
     for line in out.splitlines():
         if "IOPlatformUUID" in line:
             return line.split('"')[-2].strip()
-    _STATE_DIR.mkdir(parents=True, exist_ok=True)
     if _MACHINE_ID_FILE.exists():
         return _MACHINE_ID_FILE.read_text().strip()
     mid = str(uuidlib.uuid4())
-    _MACHINE_ID_FILE.write_text(mid)
-    _MACHINE_ID_FILE.chmod(0o600)
+    write_private_text(_MACHINE_ID_FILE, mid)
     return mid

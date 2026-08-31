@@ -1,54 +1,128 @@
 """Tiered, secret-safe diagnostics for ``groken doctor``."""
+
 from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Protocol, cast
 
+import anyio
 import httpx
 
-from .auth import load_tokens
-from .config import load_config
+from .auth import TokenStateError, load_tokens
+from .config import ConfigStateError, load_config
+from .exec_service import ExecServiceClient
 from .gateway import GatewayManager
+from .local_health import (
+    LocalCheck,
+    inspect_environment,
+    inspect_harnesses,
+    inspect_native,
+    inspect_routines,
+)
+
+
+class _DoctorGateway(Protocol):
+    def ensure_sandbox_metadata(self) -> dict[str, object]: ...
+    def command(self, method: str) -> object: ...
+
+
+def _object_list(value: object) -> list[object] | None:
+    if not isinstance(value, list):
+        return None
+    return cast("list[object]", value)
 
 
 def _say(label: str, message: str, *, warning: bool = False) -> None:
     print(f"{label}: {'WARN — ' if warning else ''}{message}")
 
 
-def _expiry(tokens: dict[str, Any]) -> str:
+def _expiry(tokens: dict[str, object]) -> str:
     value = tokens.get("expiresAt", tokens.get("expires_at", tokens.get("expiresIn")))
     if value is None:
         return "expiry unknown"
     try:
         if isinstance(value, str):
             when = datetime.fromisoformat(value).timestamp()
-        elif float(value) < 10_000_000_000:
-            when = time.time() + float(value)
+        elif isinstance(value, (int, float)):
+            numeric_value = float(value)
+            if numeric_value < 10_000_000_000:
+                when = time.time() + numeric_value
+            else:
+                when = (
+                    numeric_value / 1000
+                    if numeric_value > 10_000_000_000_000
+                    else numeric_value
+                )
         else:
-            when = float(value) / 1000 if float(value) > 10_000_000_000_000 else float(value)
+            return "expiry unknown"
         return f"expires in {max(0, int(when - time.time()))}s"
     except (TypeError, ValueError, OverflowError):
         return "expiry unknown"
 
 
+async def _exec_daemon_check(manager: _DoctorGateway) -> bool:
+    client = ExecServiceClient(manager)
+    try:
+        result = await client.execute("/usr/bin/true", timeout_ms=5_000)
+        return result.exit_code == 0
+    finally:
+        await client.http.aclose()
+
+
+def _exec_daemon_healthy(manager: _DoctorGateway) -> bool:
+    return anyio.run(_exec_daemon_check, manager)
+
+
+def _compatibility_tier() -> None:
+    probes: tuple[tuple[str, Callable[[], LocalCheck]], ...] = (
+        ("8a harnesses", inspect_harnesses),
+        ("8b routines", inspect_routines),
+        ("8c env", inspect_environment),
+        ("8d native", inspect_native),
+    )
+    for label, probe in probes:
+        try:
+            check = probe()
+            _say(label, check.message, warning=check.warning)
+        except Exception:  # noqa: BLE001 - each diagnostic subcheck must name itself and continue.
+            _say(label, "FAIL (local check unavailable)", warning=True)
+
+
 def run_doctor() -> int:
     """Run diagnostics and return the documented process exit status."""
-    tokens = load_tokens()
+    local_state_ok = True
+    try:
+        _ = load_config()
+    except ConfigStateError as exc:
+        local_state_ok = False
+        _say("0 config", str(exc), warning=True)
+
+    try:
+        tokens = load_tokens()
+    except TokenStateError as exc:
+        local_state_ok = False
+        tokens = None
+        _say("1 tokens", str(exc), warning=True)
     token_ok = bool(tokens and tokens.get("accessToken"))
     if token_ok:
         _say("1 tokens", f"present ({_expiry(tokens or {})})")
-    else:
+    elif tokens is not None or local_state_ok:
         _say("1 tokens", "MISSING — run: groken login", warning=True)
 
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, object] = {}
     gateway_ok = False
+    manager: _DoctorGateway | None = None
     try:
         manager = GatewayManager()
         metadata = manager.ensure_sandbox_metadata()
-        agents = manager.command("listAgents")
+        agents = _object_list(manager.command("listAgents"))
+        if agents is None:
+            raise TypeError("gateway agent list must be an array")
         _say("2 gateway", f"ok ({len(agents)} agents)")
         gateway_ok = True
     except Exception:  # noqa: BLE001 - diagnostic must continue through soft tiers
@@ -57,52 +131,60 @@ def run_doctor() -> int:
     try:
         with httpx.Client(timeout=2.0) as client:
             response = client.get("http://127.0.0.1:18766/healthz")
-            response.raise_for_status()
+            _ = response.raise_for_status()
         _say("3 controller", "healthz ok")
     except Exception:  # noqa: BLE001
         _say("3 controller", "down (skipped)", warning=True)
 
-    cfg = load_config()
-    model_url = cfg.get("model_base_url") or cfg.get("modelBaseUrl")
-    model_key = cfg.get("model_api_key") or cfg.get("modelApiKey")
-    if model_url:
-        try:
-            headers = {"authorization": f"Bearer {model_key}"} if model_key else {}
-            with httpx.Client(timeout=5.0) as client:
-                response = client.get(str(model_url).rstrip("/") + "/models", headers=headers)
-                response.raise_for_status()
-            _say("4 model", "authenticated ping ok")
-        except Exception:  # noqa: BLE001
-            _say("4 model", "authenticated ping failed", warning=True)
-    else:
-        _say("4 model", "not configured", warning=True)
+    _say("4 model", "controller-owned (not independently probed)")
 
-    if metadata.get("execDaemonUrl"):
+    if manager is not None and metadata.get("execDaemonUrl"):
         try:
-            with httpx.Client(timeout=3.0) as client:
-                response = client.head(str(metadata["execDaemonUrl"]), headers={"authorization": "Bearer [redacted]"})
-                response.raise_for_status()
-            _say("5 execDaemon", "HEAD ok")
+            if not _exec_daemon_healthy(manager):
+                raise RuntimeError("exec command failed")
+            _say("5 execDaemon", "command ok")
         except Exception:  # noqa: BLE001
-            _say("5 execDaemon", "HEAD failed", warning=True)
+            _say("5 execDaemon", "command failed", warning=True)
     else:
         _say("5 execDaemon", "metadata unavailable", warning=True)
 
-    cached = cfg.get("podId") or cfg.get("pod_id")
     current = metadata.get("podId")
-    if cached and current and str(cached) != str(current):
-        _say("6 podId", "ALARM — changed since cached config", warning=True)
-    else:
-        _say("6 podId", "unchanged" if cached and current else "no cached podId")
+    _say(
+        "6 podId",
+        "metadata available" if current else "metadata unavailable",
+        warning=current is None,
+    )
 
     try:
-        request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n"
-        result = subprocess.run(["groken-mcp", "initialize"], input=request, text=True,
-                                capture_output=True, timeout=5, check=False)
+        request = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "groken-doctor", "version": "1"},
+                    },
+                }
+            )
+            + "\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "groken.mcp_server"],
+            input=request,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
         if result.returncode == 0 and result.stdout.strip():
             _say("7 MCP", "self-handshake ok")
         else:
             raise RuntimeError("no valid response")
     except Exception:  # noqa: BLE001
         _say("7 MCP", "self-handshake failed", warning=True)
-    return 0 if token_ok and gateway_ok else 1
+
+    _compatibility_tier()
+    return 0 if local_state_ok and token_ok and gateway_ok else 1

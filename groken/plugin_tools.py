@@ -5,14 +5,27 @@ from collections.abc import Mapping
 from typing import cast
 
 
+def _object_dict(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    return cast("dict[str, object]", value)
+
+
+def _object_list(value: object) -> list[object] | None:
+    if not isinstance(value, list):
+        return None
+    return cast("list[object]", value)
+
+
 def parse_arguments_json(raw: str) -> dict[str, object]:
     try:
-        value = json.loads(raw)
+        value = cast("object", json.loads(raw))
     except (TypeError, ValueError) as exc:
         raise ValueError("tool arguments must be valid JSON") from exc
-    if not isinstance(value, dict):
+    arguments = _object_dict(value)
+    if arguments is None:
         raise TypeError("tool arguments must be a JSON object")
-    return cast("dict[str, object]", value)
+    return arguments
 
 
 def resolve_catalog_tool_name(
@@ -20,23 +33,25 @@ def resolve_catalog_tool_name(
     requested: str,
     server_identifier: str | None = None,
 ) -> str:
-    raw_servers = payload.get("servers")
-    if not isinstance(raw_servers, list):
+    raw_servers = _object_list(payload.get("servers"))
+    if raw_servers is None:
         raise TypeError("plugin catalog has no server list")
     short_match: str | None = None
     for raw_server in raw_servers:
-        if not isinstance(raw_server, dict):
+        server = _object_dict(raw_server)
+        if server is None:
             continue
-        if server_identifier is not None and raw_server.get("serverIdentifier") != server_identifier:
+        if server_identifier is not None and server.get("serverIdentifier") != server_identifier:
             continue
-        raw_tools = raw_server.get("tools")
-        if not isinstance(raw_tools, list):
+        raw_tools = _object_list(server.get("tools"))
+        if raw_tools is None:
             continue
         for raw_tool in raw_tools:
-            if not isinstance(raw_tool, dict):
+            tool = _object_dict(raw_tool)
+            if tool is None:
                 continue
-            name = raw_tool.get("name")
-            tool_name = raw_tool.get("toolName")
+            name = tool.get("name")
+            tool_name = tool.get("toolName")
             if name == requested and isinstance(name, str):
                 return name
             if tool_name == requested and isinstance(name, str):
@@ -47,24 +62,23 @@ def resolve_catalog_tool_name(
 
 
 def render_tool_catalog(payload: dict[str, object]) -> str:
-    raw_servers = payload.get("servers")
-    if not isinstance(raw_servers, list) or not raw_servers:
+    raw_servers = _object_list(payload.get("servers"))
+    if not raw_servers:
         return "No plugin tools found."
     lines: list[str] = []
     for raw_server in raw_servers:
-        if not isinstance(raw_server, dict):
+        server = _object_dict(raw_server)
+        if server is None:
             continue
-        server = cast("dict[str, object]", raw_server)
         identifier = str(server.get("serverIdentifier") or "?")
         status = str(server.get("status") or "unknown")
         account = str(server.get("accountLabel") or "default")
-        raw_tools = server.get("tools")
-        tools = raw_tools if isinstance(raw_tools, list) else []
+        tools = _object_list(server.get("tools")) or []
         lines.append(f"{identifier} [{status}] account={account} tools={len(tools)}")
         for raw_tool in tools:
-            if not isinstance(raw_tool, dict):
+            tool = _object_dict(raw_tool)
+            if tool is None:
                 continue
-            tool = cast("dict[str, object]", raw_tool)
             name = str(tool.get("name") or tool.get("toolName") or "?")
             description = str(tool.get("description") or "").replace("\n", " ")[:180]
             lines.append(f"  {name}" + (f" - {description}" if description else ""))

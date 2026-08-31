@@ -1,4 +1,9 @@
 import base64
+import os
+import signal
+import sys
+import tempfile
+import tracemalloc
 from pathlib import Path
 from typing import cast
 
@@ -8,6 +13,7 @@ from pydantic import ValidationError
 
 from groken.native_executor import NativeExecutor
 from groken.native_models import (
+    MAX_OUTPUT_BYTES,
     FileDelete,
     FileGrep,
     FileMove,
@@ -52,6 +58,159 @@ async def test_terminal_exec_preserves_literal_argv_without_shell(tmp_path: Path
     assert result["exit_code"] == 0
     assert base64.b64decode(str(result["stdout_b64"])) == b"; touch escaped"
     assert not (tmp_path / "escaped").exists()
+
+
+@pytest.mark.anyio
+async def test_terminal_exec_bounds_retained_high_output(tmp_path: Path) -> None:
+    chunk_bytes = 65_536
+    chunk_count = 256
+    command = "\n".join(
+        (
+            "import os",
+            f"chunk_bytes = {chunk_bytes}",
+            f"chunk_count = {chunk_count}",
+            "for descriptor, byte in ((1, b'o'), (2, b'e')):",
+            "    for _ in range(chunk_count):",
+            "        os.write(descriptor, byte * chunk_bytes)",
+        )
+    )
+    operation = TerminalExec(
+        type="terminal.exec",
+        argv=[sys.executable, "-c", command],
+    )
+
+    tracemalloc.start()
+    try:
+        result = await NativeExecutor().execute(operation, tmp_path)
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert result["exit_code"] == 0
+    assert base64.b64decode(str(result["stdout_b64"])) == b"o" * MAX_OUTPUT_BYTES
+    assert base64.b64decode(str(result["stderr_b64"])) == b"e" * MAX_OUTPUT_BYTES
+    assert result["truncated"] is True
+    assert peak_bytes < MAX_OUTPUT_BYTES * 12
+
+
+@pytest.mark.anyio
+async def test_terminal_exec_timeout_kills_descendant_process_group(
+    tmp_path: Path,
+) -> None:
+    descendant_pid_path = tmp_path / "descendant.pid"
+    descendant_command = """\
+import signal
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+print("ready", flush=True)
+signal.pause()
+"""
+    command = "\n".join(
+        (
+            "import os, signal, subprocess, sys",
+            "from pathlib import Path",
+            "for _ in range(32):",
+            "    os.write(1, b'x' * 65_536)",
+            "child = subprocess.Popen(",
+            f"    [sys.executable, '-c', {descendant_command!r}],",
+            "    stdout=subprocess.PIPE,",
+            "    stderr=subprocess.DEVNULL,",
+            ")",
+            "child.stdout.readline()",
+            f"Path({str(descendant_pid_path)!r}).write_text(str(child.pid))",
+            "signal.pause()",
+        )
+    )
+    operation = TerminalExec(
+        type="terminal.exec",
+        argv=[sys.executable, "-c", command],
+        timeout_ms=1_000,
+    )
+
+    result = await NativeExecutor().execute(operation, tmp_path)
+    descendant_pid = int(descendant_pid_path.read_text())
+
+    try:
+        os.kill(descendant_pid, 0)
+    except ProcessLookupError:
+        descendant_alive = False
+    else:
+        descendant_alive = True
+    try:
+        assert not descendant_alive
+    finally:
+        if descendant_alive:
+            os.kill(descendant_pid, signal.SIGKILL)
+
+    assert result["exit_code"] is None
+    assert base64.b64decode(str(result["stdout_b64"])) == b"x" * MAX_OUTPUT_BYTES
+    assert result["timed_out"] is True
+    assert result["truncated"] is True
+
+
+@pytest.mark.anyio
+async def test_terminal_exec_cancellation_kills_and_awaits_descendant_process_group(
+    tmp_path: Path,
+) -> None:
+    descendant_pid_path = tmp_path / "cancelled-descendant.pid"
+    descendant_command = """\
+import signal
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+print("ready", flush=True)
+signal.pause()
+"""
+    with tempfile.TemporaryDirectory(prefix="groken-cancel-") as socket_directory:
+        ready_socket_path = Path(socket_directory) / "ready.sock"
+        command = "\n".join(
+            (
+                "import signal, socket, subprocess, sys",
+                "from pathlib import Path",
+                "child = subprocess.Popen(",
+                f"    [sys.executable, '-c', {descendant_command!r}],",
+                "    stdout=subprocess.PIPE,",
+                ")",
+                "child.stdout.readline()",
+                f"Path({str(descendant_pid_path)!r}).write_text(str(child.pid))",
+                "with socket.socket(socket.AF_UNIX) as ready:",
+                f"    ready.connect({str(ready_socket_path)!r})",
+                "    ready.sendall(b'ready')",
+                "signal.pause()",
+            )
+        )
+        operation = TerminalExec(
+            type="terminal.exec",
+            argv=[sys.executable, "-c", command],
+            stdin_b64=base64.b64encode(b"x" * MAX_OUTPUT_BYTES).decode(),
+            timeout_ms=30_000,
+        )
+        listener = await anyio.create_unix_listener(ready_socket_path)
+        cancel_scope = anyio.CancelScope()
+        execution_finished = anyio.Event()
+
+        async def execute_until_cancelled() -> None:
+            with cancel_scope:
+                _ = await NativeExecutor().execute(operation, tmp_path)
+            execution_finished.set()
+
+        with anyio.fail_after(5):
+            async with listener, anyio.create_task_group() as task_group:
+                _ = task_group.start_soon(execute_until_cancelled)
+                async with await listener.accept() as ready_stream:
+                    assert await ready_stream.receive() == b"ready"
+                cancel_scope.cancel()
+                await execution_finished.wait()
+
+    descendant_pid = int(descendant_pid_path.read_text())
+    try:
+        os.kill(descendant_pid, 0)
+    except ProcessLookupError:
+        descendant_alive = False
+    else:
+        descendant_alive = True
+    try:
+        assert not descendant_alive
+    finally:
+        if descendant_alive:
+            os.kill(descendant_pid, signal.SIGKILL)
 
 
 @pytest.mark.anyio

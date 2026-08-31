@@ -38,7 +38,9 @@ class PollerConfig(BaseModel):
 
 
 class Runner(Protocol):
-    async def run(self, job_id: str, request: JobRequest, workspace: Path) -> JobExecution: ...
+    async def run(
+        self, job_id: str, request: JobRequest, workspace: Path
+    ) -> JobExecution: ...
 
 
 @final
@@ -53,8 +55,12 @@ class RemotePoller:
         self._settings: PollerSettings = settings
         self._secret_store = SecretStore(settings.state_dir)
         self._config_file: Path = settings.state_dir / "poller.json"
-        self._pending_completion_file: Path = settings.state_dir / "pending-completion.json"
-        self._client = client or httpx.AsyncClient(base_url=settings.controller_url, timeout=60)
+        self._pending_completion_file: Path = (
+            settings.state_dir / "pending-completion.json"
+        )
+        self._client = client or httpx.AsyncClient(
+            base_url=settings.controller_url, timeout=60
+        )
         self._owns_client: bool = client is None
         self._runner = runner or OmoRunner(
             omo_command=settings.omo_command,
@@ -70,7 +76,9 @@ class RemotePoller:
         lease_response = await self._client.post(
             "/v1/worker/lease",
             headers=headers,
-            json=LeaseRequest(worker_id=self._settings.worker_id).model_dump(mode="json"),
+            json=LeaseRequest(worker_id=self._settings.worker_id).model_dump(
+                mode="json"
+            ),
         )
         if lease_response.status_code == 204:
             return False
@@ -82,7 +90,9 @@ class RemotePoller:
             origin_session_id=leased.origin_session_id,
         )
         try:
-            workspace = resolve_workspace(self._settings.workspace_root, leased.workspace)
+            workspace = resolve_workspace(
+                self._settings.workspace_root, leased.workspace
+            )
             execution = await self._runner.run(leased.job_id, request, workspace)
             completion = CompletionRequest(
                 worker_id=self._settings.worker_id,
@@ -134,7 +144,9 @@ class RemotePoller:
             if not self._secret_store.configured():
                 raise ValueError("poller enrollment is incomplete")
             config = PollerConfig.model_validate_json(self._config_file.read_text())
-            if config.controller_url.rstrip("/") != self._settings.controller_url.rstrip("/"):
+            if config.controller_url.rstrip(
+                "/"
+            ) != self._settings.controller_url.rstrip("/"):
                 raise ValueError("controller URL differs from enrolled controller URL")
             return config
         if self._secret_store.has_artifacts():
@@ -142,7 +154,9 @@ class RemotePoller:
         response = await self._client.post(
             "/v1/enroll",
             headers={"x-enrollment-token": self._settings.enrollment_token},
-            json=EnrollmentRequest(worker_id=self._settings.worker_id).model_dump(mode="json"),
+            json=EnrollmentRequest(worker_id=self._settings.worker_id).model_dump(
+                mode="json"
+            ),
         )
         _ = response.raise_for_status()
         enrolled = EnrollmentResponse.model_validate(response.json())
@@ -172,6 +186,12 @@ class RemotePoller:
             headers=headers,
             json=completion.model_dump(mode="json"),
         )
+        if response.status_code == 409:
+            rejected = self._settings.state_dir / (
+                f"rejected-completion-{completion.job_id}.json"
+            )
+            os.replace(self._pending_completion_file, rejected)
+            return True
         _ = response.raise_for_status()
         self._pending_completion_file.unlink()
         return True

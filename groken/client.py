@@ -3,7 +3,7 @@ import plistlib
 import sys
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import cast, final
 from xml.parsers.expat import ExpatError
 
 import httpx
@@ -17,12 +17,21 @@ CLIENT_TYPE = "sand"
 APP_PATH = Path("/Applications/Grok Bot.app/Contents/Info.plist")
 
 
+def _object_dict(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    return cast("dict[str, object]", value)
+
+
 def detect_client_version() -> str:
     override = os.environ.get("SAND_CLIENT_VERSION")
     if override:
         return override
     try:
-        plist = plistlib.loads(APP_PATH.read_bytes())
+        plist_value = cast("object", plistlib.loads(APP_PATH.read_bytes()))
+        plist = _object_dict(plist_value)
+        if plist is None:
+            raise ValueError("application plist must contain a dictionary")
         version = plist.get("CFBundleShortVersionString")
         if isinstance(version, str) and version:
             cfg = load_config()
@@ -45,6 +54,7 @@ GROK_BOT = "aiserver.v1.GrokBotService"
 DASHBOARD = "aiserver.v1.DashboardService"
 
 
+@final
 class ConnectError(Exception):
     def __init__(self, status: int, body: str):
         super().__init__(f"connect error {status}: {body[:400]}")
@@ -52,6 +62,7 @@ class ConnectError(Exception):
         self.body = body
 
 
+@final
 class SandClient:
     def __init__(self, access_token: str | None = None):
         self.access_token = access_token or get_access_token()
@@ -83,7 +94,7 @@ class SandClient:
             return True
         return False
 
-    def unary(self, service: str, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def unary(self, service: str, method: str, payload: dict[str, object]) -> dict[str, object]:
         url = f"{BACKEND_URL}/{service}/{method}"
         for attempt in range(2):
             r = self.http.post(url, headers=self._headers(), json=payload)
@@ -91,13 +102,17 @@ class SandClient:
                 continue
             if r.status_code != 200:
                 raise ConnectError(r.status_code, r.text)
-            return r.json()
+            value = cast("object", r.json())
+            response = _object_dict(value)
+            if response is None:
+                raise TypeError("RPC response must be a JSON object")
+            return response
         raise ConnectError(401, "unauthorized after refresh")
 
-    def list_sandboxes(self) -> dict[str, Any]:
+    def list_sandboxes(self) -> dict[str, object]:
         return self.unary(GROK_BOT, "ListSandBoxes", {})
 
-    def list_sand_mcp_tools(self, server_identifiers: list[str] | None = None) -> dict[str, Any]:
+    def list_sand_mcp_tools(self, server_identifiers: list[str] | None = None) -> dict[str, object]:
         return self.unary(
             DASHBOARD,
             "ListSandMcpTools",
@@ -112,7 +127,7 @@ class SandClient:
         arguments: dict[str, object],
         tool_call_id: str,
         agent_id: str,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         return self.unary(
             DASHBOARD,
             "ExecuteSandMcpTool",

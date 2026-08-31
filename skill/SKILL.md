@@ -1,11 +1,12 @@
 ---
 name: groken
-description: Delegate tasks to a dedicated Grok Bot agent running on xAI/Cursor's always-on cloud computer. Real-time chat bridge - send a task, the Bot executes it on its cloud VM (browser, terminal, files, plugins like Slack/GitHub/Notion), replies stream back. Use when work should run on cloud compute instead of this host, needs persistent logins or browser automation on services without APIs, must survive host shutdown, or needs a stateful long-running agent. Triggers: groken, grok bot, delegate to grok, cloud computer, offload this, run it in the cloud, ask the bot.
+description: Delegate tasks to a dedicated Grok Bot agent running on xAI/Cursor's always-on cloud computer. Real-time chat bridge - send a task, the Bot executes it on its cloud VM (browser, terminal, files, plugins like Slack/GitHub/Notion), replies stream back. Use when work should run on cloud compute instead of this host, needs persistent logins or browser automation on services without APIs, must survive host shutdown, or needs a stateful long-running agent. Triggers: groken, grok bot, delegate to grok, cloud computer, offload this, run it in the cloud, ask the bot, share my bot, share relay.
 ---
 
-# groken — omo ↔ Grok Bot bridge
+# groken — agent harness ↔ Grok Bot bridge
 
-Bridge into Grok Bot's own chat channel (protocol-faithful: genuine OAuth login,
+Bridge from any agent harness (omo, gjc, Codex, Claude Code, Cursor, OpenCode, or
+anything that loads a `SKILL.md`) into Grok Bot's own chat channel (protocol-faithful: genuine OAuth login,
 app-identical gateway commands). Work runs on the Bot's persistent cloud VM.
 
 ## Default agent
@@ -21,28 +22,47 @@ multiple installations may share the same account Bot or set different
 
 CLI (direct):
 ```bash
-~/groken/.venv/bin/groken list                   # roster; * marks configured default
-~/groken/.venv/bin/groken configure [BOT]        # choose this machine's default Bot
-~/groken/.venv/bin/groken connect [BOT]          # auto-connect configured/named Bot VNC
-~/groken/.venv/bin/groken status                 # host, storage, and MCP health
-~/groken/.venv/bin/groken tools list [SERVER...] # discover connected plugin tools
-~/groken/.venv/bin/groken tools call SERVER TOOL --args-json '{}' --yes
-~/groken/.venv/bin/groken agents                 # legacy raw roster
-~/groken/.venv/bin/groken ask "task"             # send + wait for reply (default Bot)
-~/groken/.venv/bin/groken ask "task" --stream    # stream reply chunks to a TTY
-~/groken/.venv/bin/groken send "task"            # fire-and-forget
-~/groken/.venv/bin/groken tail                   # recent transcript
-~/groken/.venv/bin/groken tail -n 50 --json      # structured transcript entries
-~/groken/.venv/bin/groken tail --since TIMESTAMP # entries after a timestamp
-~/groken/.venv/bin/groken tail --full            # complete entry bodies
-~/groken/.venv/bin/groken exec COMMAND           # native remote command execution
-~/groken/.venv/bin/groken service install        # install launchd services
-~/groken/.venv/bin/groken service status         # inspect service presence
-~/groken/.venv/bin/groken service uninstall      # remove launchd services
-~/groken/.venv/bin/groken inspect-app            # inspect app command-table drift
-~/groken/.venv/bin/groken vnc                   # open configured Bot's computer and auto-connect
-~/groken/.venv/bin/groken vnc --display 1       # explicitly override with display N
-~/groken/.venv/bin/groken doctor                # run tiered diagnostics
+groken list                   # roster; * marks configured default
+groken configure [BOT]        # choose this machine's default Bot
+groken connect [BOT]          # auto-connect configured/named Bot VNC
+groken status                 # Bot, host, secrets, MCP, and local health
+groken tools list [SERVER...] # discover connected plugin tools
+groken tools call SERVER TOOL --args-json '{}' --yes
+groken agents                 # legacy raw roster
+groken ask "task"             # send + wait for reply (default Bot)
+groken ask "task" --stream    # stream reply chunks to a TTY
+groken send "task"            # fire-and-forget
+groken tail                   # recent transcript
+groken tail -n 50 --json      # structured transcript entries
+groken tail --since TIMESTAMP # entries after a timestamp
+groken tail --full            # complete entry bodies
+groken exec COMMAND           # native remote command execution
+groken service install        # install launchd services
+groken service status         # inspect service presence
+groken service uninstall      # remove launchd services
+groken inspect-app            # inspect 0.30 app command-table drift
+groken vnc                    # open configured Bot's computer and auto-connect
+groken vnc --display 1        # explicitly override with display N
+groken doctor                 # run tiered diagnostics
+groken bot add NAME           # create a Bot
+groken bot duplicate SRC NEW  # duplicate a Bot
+groken bot update [BOT]       # manual update, env preserved
+groken bot env capture [BOT]  # snapshot package/app inventory
+groken bot env restore [BOT]  # confirm-first inventory restore
+groken routine list           # list local routines + templates
+groken routine run NAME       # run a local routine
+groken team create NAME --bots a,b  # persistent native Grok Bot group
+groken team members NAME      # ordered native team membership
+groken team ask NAME "task"   # one message; native Bots coordinate
+groken swarm send --bots a,b "task"  # external fan out, per-bot answers
+groken swarm rooms            # read-only shared-room listing
+groken share create --name N --bot B  # owner: mint one revocable token, printed once
+groken share list             # owner: grants without token values
+groken share revoke NAME      # owner: revoke a grant (kills live streams too)
+groken share serve            # owner: manual foreground relay on 127.0.0.1:8787
+groken share connect URL --token-file PATH  # guest: token via file/prompt/stdin, never argv
+groken share status           # guest: relay URL without its token
+groken share disconnect       # guest: back to local login mode
 ```
 
 `vnc` resolves the locally configured Bot, reads that Bot's official computer
@@ -56,13 +76,29 @@ never retry an indeterminate mutating call unless repetition is safe.
 `exec` is native-mcp only. `vnc` uses the configured Bot's gateway computer status
 plus a local token-injecting proxy; it never guesses from another Bot's Chrome
 process. Review native execution commands before sending them.
-`doctor` checks seven tiers, tokens, gateway, controller, model, execDaemon, pod
-identity, and MCP handshake, while continuing through soft failures.
+
+`share` grants Bearer-token access to ONE Bot, pinned to its immutable id: no
+OAuth delegation, no sandbox credentials or metadata sent to the guest. While a
+share link is saved, ask/send/tail/events/exec/vnc go through the relay's `/v1`
+endpoints and account-level commands are blocked. The relay is a foreground
+process; the owner is responsible for TLS/tunnel when exposing it beyond
+loopback. The boundary is account control, not VM isolation: Bots on one
+account share files and browser sessions, and exec is pod-wide.
+
+`doctor` checks secret-safe tiers (tokens, gateway, controller, model,
+execDaemon, pod identity, MCP handshake, app compatibility) while continuing
+through soft failures.
 
 MCP (any host — stdio, streamable HTTP, or SSE; see the MCP server section):
 - `grok_bot_ask(text, bot?, timeout_s?)` — request/response; the primary tool
 - `grok_bot_send(text, bot?)` — fire-and-forget
-- `grok_bot_list()` / `grok_bot_tail(bot?)`
+- `grok_bot_list()` / `grok_bot_tail(bot?)` / `grok_bot_status()`
+- `grok_bot_add` / `grok_bot_duplicate` — Bot creation; blocked until `confirmed=true`
+- `grok_bot_update_status` / `grok_bot_update_trigger` — manual updates only
+- `grok_env_capture` / `grok_env_restore` — package/app inventory snapshot and confirm-first restore
+- `grok_routine_list` / `grok_routine_run` — local routine store
+- `grok_team_create` / `grok_team_members` / `grok_team_ask` — persistent native Bot groups; creation requires confirmation
+- `grok_swarm_send` — external concurrent fan-out with per-bot answer sections
 - `grok_plugin_list(server?)` — discover backend plugin tools
 - `grok_plugin_call(server, tool, arguments_json, bot?, confirmed?)` — blocked until `confirmed=true`
 
@@ -90,11 +126,10 @@ MCP (any host — stdio, streamable HTTP, or SSE; see the MCP server section):
 
 CLI errors are translated to actionable hints (auth → `groken login`, unroutable
 sandbox → retry/`groken doctor`, unknown gateway method → update the Grok Bot app).
-Pain-point research behind the design: `docs/painpoints-2026-08-19.md`.
 
 ## Failure handling
 
-- Auth errors → `~/groken/.venv/bin/groken login` (browser) to refresh tokens.
+- Auth errors → `groken login` (browser) to refresh tokens.
 - Gateway session re-mints automatically on failure; persistent failures mean
   the sandbox is recovering — retry after a minute.
 - App update broke calls? Re-extract `app.asar` from the newest DMG (x.ai/bot)
@@ -113,3 +148,5 @@ Pain-point research behind the design: `docs/painpoints-2026-08-19.md`.
 
 Internals, architecture, and tests: `~/groken/README.md`
 (`cd ~/groken && .venv/bin/python -m pytest tests/`).
+Run any command with `--help` for exact options; the shipped `--help` output is
+the factual authority when this file and the CLI ever disagree.

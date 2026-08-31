@@ -1,19 +1,45 @@
 import base64
 import hashlib
 import json
-import os
 import secrets
 import time
 import uuid as uuidlib
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 import httpx
+from typing_extensions import override
+
+from .private_files import write_private_text
 
 WEBSITE_URL = "https://cursor.com"
 API_BASE_URL = "https://api2.cursor.sh"
 PROD_AUTH_CLIENT_ID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
 
 TOKEN_FILE = Path.home() / ".config" / "groken" / "tokens.json"
+
+LocalStateReason = Literal["malformed JSON", "expected a JSON object"]
+
+
+# Exception instances must remain mutable so Python can attach traceback state.
+@dataclass(slots=True)
+class TokenStateError(Exception):
+    path: Path
+    reason: LocalStateReason
+
+    @override
+    def __str__(self) -> str:
+        return (
+            f"token state is invalid at {self.path} ({self.reason}); "
+            "remove it and run: groken login"
+        )
+
+
+def _object_dict(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    return cast("dict[str, object]", value)
 
 
 def _b64url(raw: bytes) -> str:
@@ -42,8 +68,9 @@ def poll_for_tokens(uid: str, verifier: str, timeout_s: float = 300.0) -> dict[s
                     headers={"Content-Type": "application/json"},
                 )
                 if r.status_code == 200:
-                    data = r.json()
-                    if "accessToken" in data and "refreshToken" in data:
+                    value = cast("object", r.json())
+                    data = _object_dict(value)
+                    if data is not None and "accessToken" in data and "refreshToken" in data:
                         save_tokens(data)
                         return data
             except httpx.HTTPError:
@@ -64,9 +91,12 @@ def refresh_tokens(refresh_token: str) -> dict[str, object] | None:
     )
     if r.status_code != 200:
         return None
-    data = r.json()
+    value = cast("object", r.json())
+    data = _object_dict(value)
+    if data is None:
+        raise TypeError("token response must be a JSON object")
     merged = load_tokens() or {}
-    merged.update({k: v for k, v in data.items() if v})
+    merged.update({key: item for key, item in data.items() if item})
     if "access_token" in merged:
         merged["accessToken"] = str(merged.pop("access_token"))
     if "refresh_token" in merged:
@@ -76,20 +106,20 @@ def refresh_tokens(refresh_token: str) -> dict[str, object] | None:
 
 
 def save_tokens(tokens: dict[str, object]) -> None:
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temporary = TOKEN_FILE.with_suffix(".tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w") as stream:
-        _ = stream.write(json.dumps(tokens, indent=2))
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, TOKEN_FILE)
+    write_private_text(TOKEN_FILE, json.dumps(tokens, indent=2))
 
 
 def load_tokens() -> dict[str, object] | None:
-    if TOKEN_FILE.exists():
-        return json.loads(TOKEN_FILE.read_text())
-    return None
+    if not TOKEN_FILE.exists():
+        return None
+    try:
+        value = cast("object", json.loads(TOKEN_FILE.read_text()))
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise TokenStateError(TOKEN_FILE, "malformed JSON") from exc
+    tokens = _object_dict(value)
+    if tokens is None:
+        raise TokenStateError(TOKEN_FILE, "expected a JSON object")
+    return tokens
 
 
 def get_access_token() -> str:

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar, Never
 
 import pytest
+from typing_extensions import override
 
 from groken import cli
 from groken.vnc_proxy import PORT_TOKEN_HEADER, serve_vnc_proxy
@@ -14,9 +16,10 @@ RFB_BANNER = b"RFB 003.008\n"
 
 
 class _DelayedOrigin(BaseHTTPRequestHandler):
-    ready_after: int = 3
-    hits: int = 0
+    ready_after: ClassVar[int] = 3
+    hits: ClassVar[int] = 0
 
+    @override
     def log_message(self, format: str, *args: object) -> None:
         return
 
@@ -33,22 +36,24 @@ class _DelayedOrigin(BaseHTTPRequestHandler):
             self.send_header("Upgrade", "websocket")
             self.send_header("Connection", "Upgrade")
             self.end_headers()
-            self.wfile.write(bytes([0x82, len(RFB_BANNER)]) + RFB_BANNER)
+            _ = self.wfile.write(bytes([0x82, len(RFB_BANNER)]) + RFB_BANNER)
             return
         body = b"<html>vnc</html>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        _ = self.wfile.write(body)
 
 
-def _serve(handler: type[BaseHTTPRequestHandler]) -> tuple[ThreadingHTTPServer, str]:
+def _serve(handler: type[_DelayedOrigin]) -> tuple[ThreadingHTTPServer, str]:
     handler.hits = 0
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
-    host, port = httpd.server_address
+    bound_address = httpd.server_address
+    assert len(bound_address) == 2
+    host, port = bound_address
     return httpd, f"http://{host}:{port}/vnc.html?port_token={TOKEN}"
 
 
@@ -65,8 +70,9 @@ def test_wait_ready_returns_only_after_rfb_banner() -> None:
 
 def test_wait_ready_uses_fork_websocket_token() -> None:
     class _ForkOrigin(_DelayedOrigin):
-        ready_after = 1
+        ready_after: ClassVar[int] = 1
 
+        @override
         def do_GET(self) -> None:
             if self.path != "/websockify?token=2":
                 self.send_error(404, "wrong fork")
@@ -77,7 +83,8 @@ def test_wait_ready_uses_fork_websocket_token() -> None:
     session = serve_vnc_proxy(f"{upstream}&path=websockify%3Ftoken%3D2")
     try:
         wait_until_vnc_ready(session, timeout=2.0, interval=0.0, sleep=lambda _: None)
-        assert "path=websockify%3Ftoken%3D2" in session.local_url
+        assert "token%3D2" not in session.local_url
+        assert f"path={session.websocket_path.lstrip('/')}" in session.local_url
         assert "port_token=" not in session.local_url
     finally:
         session.close()
@@ -86,7 +93,7 @@ def test_wait_ready_uses_fork_websocket_token() -> None:
 
 def test_wait_ready_times_out_without_rfb() -> None:
     class _NeverReady(_DelayedOrigin):
-        ready_after = 10_000
+        ready_after: ClassVar[int] = 10_000
 
     httpd, upstream = _serve(_NeverReady)
     session = serve_vnc_proxy(upstream)
@@ -132,8 +139,8 @@ def test_cmd_vnc_opens_configured_bot_display_after_ready(monkeypatch: pytest.Mo
             }
 
     class _Session:
-        origin = "http://127.0.0.1:9"
-        local_url = "http://127.0.0.1:9/vnc.html"
+        origin: ClassVar[str] = "http://127.0.0.1:9"
+        local_url: ClassVar[str] = "http://127.0.0.1:9/vnc.html"
 
         def close(self) -> None:
             return
@@ -142,19 +149,35 @@ def test_cmd_vnc_opens_configured_bot_display_after_ready(monkeypatch: pytest.Mo
         def wait(self) -> None:
             raise KeyboardInterrupt
 
+    def fake_vnc_url(
+        metadata: dict[str, object],
+        now: float | None = None,
+        *,
+        display: int = 1,
+    ) -> str:
+        _ = metadata, now
+        selected.append(display)
+        return "https://x/vnc.html?port_token=t"
+
+    def fake_serve_vnc_proxy(url: str) -> _Session:
+        _ = url
+        return _Session()
+
+    def fake_wait_until_vnc_ready(session: _Session, **kwargs: object) -> None:
+        _ = session, kwargs
+        order.append("wait")
+
+    def fake_webbrowser_open(url: str, new: int = 0, autoraise: bool = True) -> bool:
+        _ = new, autoraise
+        order.append(f"open:{url}")
+        return True
+
     monkeypatch.setattr(cli, "_manager", lambda: _Manager())
-    monkeypatch.setattr(
-        "groken.vnc.vnc_url",
-        lambda metadata, now=None, *, display=1: selected.append(display)
-        or "https://x/vnc.html?port_token=t",
-    )
-    monkeypatch.setattr("groken.vnc_proxy.serve_vnc_proxy", lambda url: _Session())
-    monkeypatch.setattr(
-        "groken.vnc_ready.wait_until_vnc_ready",
-        lambda session, **kwargs: order.append("wait"),
-    )
-    monkeypatch.setattr(cli.webbrowser, "open", lambda url: order.append(f"open:{url}"))
-    monkeypatch.setattr(cli.threading, "Event", _Interrupt)
+    monkeypatch.setattr("groken.vnc.vnc_url", fake_vnc_url)
+    monkeypatch.setattr("groken.vnc_proxy.serve_vnc_proxy", fake_serve_vnc_proxy)
+    monkeypatch.setattr("groken.vnc_ready.wait_until_vnc_ready", fake_wait_until_vnc_ready)
+    monkeypatch.setattr("groken.cli.webbrowser.open", fake_webbrowser_open)
+    monkeypatch.setattr("groken.cli.threading.Event", _Interrupt)
 
     cli.cmd_vnc(False)
 
@@ -191,8 +214,11 @@ def test_cmd_vnc_ensures_configured_bot_computer(monkeypatch: pytest.MonkeyPatch
     class _Stop(Exception):
         pass
 
+    def stop_proxy(_url: str) -> Never:
+        raise _Stop
+
     monkeypatch.setattr(cli, "_manager", lambda: _Manager())
-    monkeypatch.setattr("groken.vnc_proxy.serve_vnc_proxy", lambda _url: (_ for _ in ()).throw(_Stop))
+    monkeypatch.setattr("groken.vnc_proxy.serve_vnc_proxy", stop_proxy)
 
     with pytest.raises(_Stop):
         cli.cmd_vnc(False)

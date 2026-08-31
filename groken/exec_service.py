@@ -4,10 +4,13 @@ import json
 import struct
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from types import TracebackType
+from typing import Protocol, Self, TypeGuard, cast
 
 import httpx
+from anyio import CancelScope
 
 from .parsing import build_parsing_result
 
@@ -16,6 +19,7 @@ from .parsing import build_parsing_result
 class ExecResult:
     stdout: str
     stderr: str
+    exit_code: int
 
 
 class ExecServiceError(Exception):
@@ -34,26 +38,76 @@ class ExecIndeterminateError(ExecServiceError):
     pass
 
 
-class ExecServiceClient:
-    def __init__(self, manager=None, *, http_client=None, metadata_ttl_s=60, clock=time.monotonic):
-        self.manager = manager
-        self.http = http_client or httpx.AsyncClient(timeout=httpx.Timeout(30, read=30))
-        self.metadata_ttl_s = metadata_ttl_s
-        self.clock = clock
-        self._metadata: dict[str, Any] | None = None
-        self._metadata_at = 0.0
+class _MetadataManager(Protocol):
+    def ensure_sandbox_metadata(self) -> object: ...
 
-    async def _metadata_for_call(self, force: bool = False) -> dict[str, Any]:
-        if not force and self._metadata is not None and self.clock() - self._metadata_at < self.metadata_ttl_s:
+
+def _is_object_dict(value: object) -> TypeGuard[dict[str, object]]:
+    if not isinstance(value, dict):
+        return False
+    mapping = cast(dict[object, object], value)
+    return all(isinstance(key, str) for key in mapping)
+
+
+class ExecServiceClient:
+    def __init__(
+        self,
+        manager: _MetadataManager | None = None,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+        metadata_ttl_s: float = 60,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.manager: _MetadataManager | None = manager
+        self._manager_close: Callable[[], None] | None = None
+        self._owns_http: bool = http_client is None
+        self.http: httpx.AsyncClient = http_client or httpx.AsyncClient(
+            timeout=httpx.Timeout(30, read=30)
+        )
+        self.metadata_ttl_s: float = metadata_ttl_s
+        self.clock: Callable[[], float] = clock
+        self._metadata: dict[str, object] | None = None
+        self._metadata_at: float = 0.0
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        with CancelScope(shield=True):
+            if self._owns_http:
+                await self.http.aclose()
+            manager_close = self._manager_close
+            self._manager_close = None
+            if manager_close is not None:
+                manager_close()
+
+    async def _metadata_for_call(self, force: bool = False) -> dict[str, object]:
+        if (
+            not force
+            and self._metadata is not None
+            and self.clock() - self._metadata_at < self.metadata_ttl_s
+        ):
             return self._metadata
         if self.manager is None:
             from .gateway import GatewayManager
-            self.manager = GatewayManager()
+
+            manager = GatewayManager()
+            self.manager = manager
+            self._manager_close = manager.close
         try:
             value = self.manager.ensure_sandbox_metadata()
         except Exception as exc:
             raise ExecServiceError("sandbox metadata unavailable") from exc
-        if not isinstance(value, dict):
+        if not _is_object_dict(value):
             raise ExecServiceError("sandbox metadata unavailable")
         required = ("execDaemonUrl", "networkToken", "execDaemonAuthToken", "podId")
         if any(not value.get(k) for k in required):
@@ -65,24 +119,49 @@ class ExecServiceClient:
     def _envelope(payload: bytes) -> bytes:
         return struct.pack(">BI", 0, len(payload)) + payload
 
-    async def execute(self, command: str, working_directory: str = "/workspace", timeout_ms: int = 15000) -> ExecResult:
+    async def execute(
+        self,
+        command: str,
+        working_directory: str = "/workspace",
+        timeout_ms: int = 15000,
+    ) -> ExecResult:
         if not command or not command.strip():
             raise ValueError("command must not be empty")
         exec_id = str(uuid.uuid4())
         reminted = False
         while True:
             metadata = await self._metadata_for_call(reminted)
-            body = {"id": 1, "exec_id": exec_id, "shell_args": {
-                "command": command, "working_directory": working_directory, "timeout": timeout_ms,
-                "tool_call_id": "groken", "skip_approval": True, "simple_commands": [command],
-                "has_input_redirect": False, "has_output_redirect": False,
-                "parsing_result": build_parsing_result(command),
-            }}
-            url = str(metadata["execDaemonUrl"]).rstrip("/") + "/agent.v1.ExecService/Exec"
-            headers = {"content-type": "application/connect+json", "connect-protocol-version": "1",
-                       "authorization": "Bearer " + str(metadata["execDaemonAuthToken"])}
+            body: dict[str, object] = {
+                "id": 1,
+                "exec_id": exec_id,
+                "shell_args": {
+                    "command": command,
+                    "working_directory": working_directory,
+                    "timeout": timeout_ms,
+                    "tool_call_id": "groken",
+                    "skip_approval": True,
+                    "simple_commands": [command],
+                    "has_input_redirect": False,
+                    "has_output_redirect": False,
+                    "parsing_result": build_parsing_result(command),
+                },
+            }
+            url = (
+                str(metadata["execDaemonUrl"]).rstrip("/")
+                + "/agent.v1.ExecService/Exec"
+            )
+            headers = {
+                "content-type": "application/connect+json",
+                "connect-protocol-version": "1",
+                "authorization": "Bearer " + str(metadata["execDaemonAuthToken"]),
+            }
             try:
-                result, unauth = await self._call(url, str(metadata["networkToken"]), headers, self._envelope(json.dumps(body, separators=(",", ":")).encode()))
+                result, unauth = await self._call(
+                    url,
+                    str(metadata["networkToken"]),
+                    headers,
+                    self._envelope(json.dumps(body, separators=(",", ":")).encode()),
+                )
             except httpx.HTTPStatusError as exc:
                 unauth = exc.response.status_code == 401
                 if not unauth:
@@ -94,12 +173,18 @@ class ExecServiceClient:
                 continue
             if unauth:
                 raise ExecRemoteError("exec request unauthorized")
+            if result is None:
+                raise ExecProtocolError("missing execution result")
             return result
 
-    async def _call(self, url: str, token: str, headers: dict[str, str], body: bytes):
+    async def _call(
+        self, url: str, token: str, headers: dict[str, str], body: bytes
+    ) -> tuple[ExecResult | None, bool]:
         seen = False
         stdout, stderr = "", ""
-        async with self.http.stream("POST", url, params={"network_token": token}, headers=headers, content=body) as response:
+        async with self.http.stream(
+            "POST", url, params={"network_token": token}, headers=headers, content=body
+        ) as response:
             if response.status_code == 401:
                 return None, True
             if response.status_code >= 400:
@@ -115,32 +200,61 @@ class ExecServiceClient:
                         raise ExecProtocolError("frame too large")
                     if len(buf) < 5 + length:
                         break
-                    payload, buf = buf[5:5 + length], buf[5 + length:]
-                    try: data = json.loads(payload)
-                    except (ValueError, UnicodeDecodeError) as exc: raise ExecProtocolError("invalid response frame") from exc
+                    payload, buf = buf[5 : 5 + length], buf[5 + length :]
+                    try:
+                        data = cast(object, json.loads(payload))
+                    except (ValueError, UnicodeDecodeError) as exc:
+                        raise ExecProtocolError("invalid response frame") from exc
                     if flags & 0x80:
-                        error = data.get("error") if isinstance(data, dict) else None
-                        if error and str(error.get("code", error.get("message", ""))).lower() in {"unauthenticated", "401"}:
-                            if seen: raise ExecIndeterminateError("execution state is indeterminate")
+                        error = data.get("error") if _is_object_dict(data) else None
+                        if (
+                            _is_object_dict(error)
+                            and error
+                            and str(error.get("code", error.get("message", ""))).lower()
+                            in {"unauthenticated", "401"}
+                        ):
+                            if seen:
+                                raise ExecIndeterminateError(
+                                    "execution state is indeterminate"
+                                )
                             return None, True
-                        if error: raise ExecRemoteError("remote execution failed")
+                        if error:
+                            raise ExecRemoteError("remote execution failed")
                     else:
                         seen = True
-                        msg = None
-                        if isinstance(data, dict):
-                            envelopes = [
-                                data.get("exec_client_message", {}).get("shell_result")
-                                if isinstance(data.get("exec_client_message"), dict) else None,
-                                data.get("execClientMessage", {}).get("shellResult")
-                                if isinstance(data.get("execClientMessage"), dict) else None,
-                            ]
-                            if sum(value is not None for value in envelopes) == 1:
-                                msg = next(value for value in envelopes if value is not None)
-                        if isinstance(msg, dict):
-                            if "success" in msg and isinstance(msg["success"], dict):
-                                stdout += str(msg["success"].get("stdout", ""))
-                            elif "failure" in msg and isinstance(msg["failure"], dict):
-                                stderr += str(msg["failure"].get("stderr", "")); return ExecResult(stdout, stderr), False
-                        if len(stdout) + len(stderr) > 10 * 1024 * 1024: raise ExecProtocolError("output too large")
-            if buf: raise ExecProtocolError("truncated response frame")
-        return ExecResult(stdout, stderr), False
+                        messages: list[object] = []
+                        if _is_object_dict(data):
+                            snake = data.get("exec_client_message")
+                            if _is_object_dict(snake):
+                                shell_result = snake.get("shell_result")
+                                if shell_result is not None:
+                                    messages.append(shell_result)
+                            camel = data.get("execClientMessage")
+                            if _is_object_dict(camel):
+                                shell_result = camel.get("shellResult")
+                                if shell_result is not None:
+                                    messages.append(shell_result)
+                        if len(messages) == 1 and _is_object_dict(messages[0]):
+                            msg = messages[0]
+                            success = msg.get("success")
+                            failure = msg.get("failure")
+                            if _is_object_dict(success):
+                                stdout += str(success.get("stdout", ""))
+                            elif _is_object_dict(failure):
+                                stderr += str(failure.get("stderr", ""))
+                                raw_exit_code = failure.get(
+                                    "exit_code",
+                                    failure.get("exitCode", 1),
+                                )
+                                exit_code = (
+                                    raw_exit_code
+                                    if isinstance(raw_exit_code, int)
+                                    and not isinstance(raw_exit_code, bool)
+                                    else 1
+                                )
+                                return ExecResult(stdout, stderr, exit_code), False
+                        if len(stdout) + len(stderr) > 10 * 1024 * 1024:
+                            raise ExecProtocolError("output too large")
+            if buf:
+                raise ExecProtocolError("truncated response frame")
+        return ExecResult(stdout, stderr, 0), False

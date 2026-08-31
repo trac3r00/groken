@@ -118,14 +118,23 @@ not silently grant native code execution. Its typed tools are:
 - `native_process_list`
 - `native_process_kill`
 - `native_operation_get`
+- `direct_cloud_exec` (always registered; executes a command directly through the
+  ExecService client, bypassing the durable operation queue and its idempotency
+  records; use the queued tools when you need durability or replay safety)
+- `native_vnc_url` (registered only when the VNC capability is enabled; mints
+  the current sandbox's noVNC URL, which carries access material and must be
+  treated as a secret)
+
+A default handshake therefore lists 11 tools, or 12 with VNC enabled.
 
 Network transports bind loopback by default. The controller bearer token comes
 from the environment, not MCP arguments.
 
 ## Proven official direct endpoints
 
-`EnsureSandBox` v0.23.0 returns these native computer fields in addition to the
-gateway:
+`EnsureSandBox` (first proven against the 0.23.0 app; the field set is
+historical evidence from that audit) returns these native computer fields in
+addition to the gateway:
 
 - `execDaemonUrl`
 - `execDaemonAuthToken`
@@ -187,7 +196,8 @@ computer. Initial native gateway tools should remain fixed read-only adapters:
 - feature gates
 - workflows, channels, automations, and asynchronous task status
 
-The 87-command inventory is in `capabilities-0.23.0.md`. Mutations should be
+The current audited command inventory is in `capabilities-0.30.0.md`; historical
+0.23/0.24/0.27 detail remains in `capabilities-0.27.0.md`. Mutations should be
 added one typed command at a time with known request schema, response schema,
 risk, nonce/idempotency behavior, and unknown-outcome handling. A generic
 `gateway.command` is intentionally absent.

@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          version: "0.11.30"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install locked environment
+        run: uv sync --locked --all-extras
+
+      - name: Run tests
+        run: uv run --no-sync pytest tests/ -q
+
+  lint:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          version: "0.11.30"
+
+      - name: Install locked environment
+        run: uv sync --locked --all-extras
+
+      - name: Lint package sources and tests
+        run: uv run --no-sync ruff check groken tests
+
+      - name: Type-check errors
+        run: uv run --no-sync basedpyright --level error
+
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          version: "0.11.30"
+
+      - name: Build sdist and wheel
+        run: uv build --out-dir dist
+
+      - name: Verify wheel ships skill and hero asset
+        run: |
+          python3 - <<'PY'
+          import pathlib, zipfile
+          wheel = next(pathlib.Path("dist").glob("*.whl"))
+          names = set(zipfile.ZipFile(wheel).namelist())
+          required = {
+              "groken-0.3.0.data/data/skill/SKILL.md",
+              "groken-0.3.0.data/data/docs/assets/groken-hero.png",
+              "groken-0.3.0.data/data/docs/capabilities-0.30.0.md",
+          }
+          forbidden = {
+              "groken-0.3.0.data/data/docs/painpoints-2026-08-19.md",
+              "groken-0.3.0.data/data/docs/capabilities-0.27.0.md",
+          }
+          missing = required - names
+          leaked = forbidden & names
+          if missing or leaked:
+              raise SystemExit(
+                  f"wheel is missing: {sorted(missing)}; leaked: {sorted(leaked)}"
+              )
+          PY
+
+      - name: Smoke-test wheel-installed skill
+        run: |
+          wheels=(dist/*.whl)
+          wheel="${wheels[0]}"
+          qa="${RUNNER_TEMP}/groken-wheel"
+          home="${RUNNER_TEMP}/groken-home"
+          uv venv --python 3.13 "$qa"
+          uv pip install --python "$qa/bin/python" "$wheel"
+          mkdir -p "$home/.codex"
+          (
+            cd "$RUNNER_TEMP"
+            HOME="$home" "$qa/bin/groken" install codex-skills
+          )
+          test -f "$home/.codex/skills/groken/SKILL.md"

@@ -6,6 +6,7 @@ from typing import cast, final
 
 import anyio
 
+from .private_files import write_private_text
 from .worker_models import JobExecution, JobRequest
 from .worker_store import SecretStore
 
@@ -78,7 +79,9 @@ class OmoRunner:
         self._secret_store: SecretStore = secret_store
         self._timeout_seconds: float = timeout_seconds
 
-    async def run(self, job_id: str, request: JobRequest, workspace: Path) -> JobExecution:
+    async def run(
+        self, job_id: str, request: JobRequest, workspace: Path
+    ) -> JobExecution:
         workspace.mkdir(parents=True, exist_ok=True)
         secrets = self._secret_store.load()
         session_dir = self._state_dir / "sessions"
@@ -116,14 +119,20 @@ class OmoRunner:
             raise WorkerProtocolError("OMO execution timed out") from error
         stdout = process.stdout.decode("utf-8", "replace") if process.stdout else ""
         stderr = process.stderr.decode("utf-8", "replace") if process.stderr else ""
-        self._write_log(job_id, stdout, stderr)
+        self.write_log(job_id, stdout, stderr)
         if process.returncode != 0:
-            raise WorkerProtocolError(f"OMO exited {process.returncode}: {stderr[-2000:]}")
-        return JobExecution(result=extract_final_text(stdout), exit_code=process.returncode)
+            raise WorkerProtocolError(
+                f"OMO exited {process.returncode}: {stderr[-2000:]}"
+            )
+        return JobExecution(
+            result=extract_final_text(stdout), exit_code=process.returncode
+        )
 
-    def _write_log(self, job_id: str, stdout: str, stderr: str) -> None:
+    def write_log(self, job_id: str, stdout: str, stderr: str) -> None:
         logs_dir = self._state_dir / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         path = logs_dir / f"{job_id}.json"
-        _ = path.write_text(json.dumps({"stdout": stdout, "stderr": stderr}))
-        path.chmod(0o600)
+        write_private_text(
+            path,
+            json.dumps({"stdout": stdout, "stderr": stderr}),
+        )

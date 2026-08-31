@@ -1,33 +1,40 @@
 from __future__ import annotations
 
+import secrets
 import select
 import socket
 import ssl
 import threading
 from dataclasses import dataclass
+from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import ClassVar, Final
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
+from typing import Final, cast, final
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 import httpx
+from typing_extensions import override
 
 PORT_TOKEN_HEADER: Final = "x-anyrun-port-token"
-_HOP_BY_HOP: Final = frozenset({
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-})
+_HOP_BY_HOP: Final = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ProxyConfig:
     origin: str
     token: str
+    websocket_target: str
+    capability_path: str
     client: httpx.Client
 
 
@@ -64,9 +71,14 @@ def _origin_from_url(url: str) -> str:
     return f"{parsed.scheme or 'https'}://{parsed.netloc}"
 
 
-def _viewer_query(url: str) -> str:
-    pairs = ((key, value) for key, value in parse_qsl(urlparse(url).query) if key != "port_token")
-    return urlencode(tuple(pairs))
+def _viewer_query(url: str, capability_path: str) -> str:
+    pairs = [
+        (key, value)
+        for key, value in parse_qsl(urlparse(url).query)
+        if key not in {"path", "port_token"}
+    ]
+    pairs.append(("path", capability_path.lstrip("/")))
+    return urlencode(pairs)
 
 
 def _websocket_path(url: str) -> str:
@@ -74,39 +86,74 @@ def _websocket_path(url: str) -> str:
     return f"/{path.lstrip('/')}"
 
 
+@final
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    config: ClassVar[_ProxyConfig]
 
+    def __init__(
+        self,
+        request: socket.socket,
+        client_address: tuple[str, int],
+        server: ThreadingHTTPServer,
+        *,
+        config: _ProxyConfig,
+    ) -> None:
+        self._config = config
+        super().__init__(request, client_address, server)
+
+    @override
     def log_message(self, format: str, *args: object) -> None:
         return
 
     def do_GET(self) -> None:
-        if self.headers.get("Upgrade", "").lower() == "websocket":
-            self._tunnel_websocket()
+        is_websocket = self.headers.get("Upgrade", "").lower() == "websocket"
+        target = self._upstream_target(websocket=is_websocket)
+        if target is None:
             return
-        self._proxy_http()
+        if is_websocket:
+            self._tunnel_websocket(target)
+            return
+        self._proxy_http(target)
 
     def do_HEAD(self) -> None:
-        self._proxy_http()
+        target = self._upstream_target(websocket=False)
+        if target is not None:
+            self._proxy_http(target)
 
-    def _proxy_http(self) -> None:
-        response = self.config.client.request(self.command, self.path)
+    def _upstream_target(self, *, websocket: bool) -> str | None:
+        parsed = urlsplit(self.path)
+        if parsed.scheme or parsed.netloc:
+            self.send_error(400, "absolute proxy targets are forbidden")
+            return None
+        if parsed.path == self._config.capability_path:
+            if websocket:
+                return self._config.websocket_target
+            self.send_error(404)
+            return None
+        prefix = f"{self._config.capability_path}/"
+        if not parsed.path.startswith(prefix):
+            self.send_error(404)
+            return None
+        upstream_path = parsed.path.removeprefix(self._config.capability_path)
+        return urlunsplit(("", "", upstream_path, parsed.query, ""))
+
+    def _proxy_http(self, target: str) -> None:
+        response = self._config.client.request(self.command, target)
         body = response.content
         self.send_response(response.status_code)
         for key, value in response.headers.items():
             if key.lower() in _HOP_BY_HOP:
                 continue
-            if key.lower() == "content-length":
+            if key.lower() in {"content-encoding", "content-length"}:
                 continue
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(body)
+            _ = self.wfile.write(body)
 
-    def _tunnel_websocket(self) -> None:
-        origin = urlparse(self.config.origin)
+    def _tunnel_websocket(self, target: str) -> None:
+        origin = urlparse(self._config.origin)
         host = origin.hostname
         if host is None:
             self.send_error(502, "origin has no host")
@@ -119,25 +166,25 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             sock = raw
         try:
-            sock.sendall(self._origin_upgrade_request(origin.netloc))
+            sock.sendall(self._origin_upgrade_request(origin.netloc, target))
             self._shuttle(sock)
         finally:
             sock.close()
 
-    def _origin_upgrade_request(self, netloc: str) -> bytes:
-        lines = [f"{self.command} {self.path} {self.request_version}"]
+    def _origin_upgrade_request(self, netloc: str, target: str) -> bytes:
+        lines = [f"{self.command} {target} {self.request_version}"]
         for key, value in self.headers.items():
             if key.lower() == "host":
                 continue
             lines.append(f"{key}: {value}")
         lines.append(f"Host: {netloc}")
-        lines.append(f"{PORT_TOKEN_HEADER}: {self.config.token}")
+        lines.append(f"{PORT_TOKEN_HEADER}: {self._config.token}")
         lines.append("")
         lines.append("")
         return "\r\n".join(lines).encode("latin-1")
 
     def _shuttle(self, origin: socket.socket) -> None:
-        client = self.connection
+        client = cast("socket.socket", self.connection)
         sockets = [client, origin]
         while True:
             readable, _, broken = select.select(sockets, [], sockets, 60)
@@ -151,29 +198,37 @@ class _Handler(BaseHTTPRequestHandler):
                 dest.sendall(payload)
 
 
-def serve_vnc_proxy(upstream_url: str, *, host: str = "127.0.0.1", port: int = 0) -> VncProxySession:
+def serve_vnc_proxy(
+    upstream_url: str, *, host: str = "127.0.0.1", port: int = 0
+) -> VncProxySession:
     token = _token_from_url(upstream_url)
     origin = _origin_from_url(upstream_url)
+    capability_path = f"/{secrets.token_urlsafe(32)}"
     client = httpx.Client(
         base_url=origin,
         headers={PORT_TOKEN_HEADER: token},
         timeout=30.0,
         follow_redirects=False,
     )
-    _Handler.config = _ProxyConfig(origin=origin, token=token, client=client)
-    httpd = ThreadingHTTPServer((host, port), _Handler)
+    config = _ProxyConfig(
+        origin=origin,
+        token=token,
+        websocket_target=_websocket_path(upstream_url),
+        capability_path=capability_path,
+        client=client,
+    )
+    httpd = ThreadingHTTPServer((host, port), partial(_Handler, config=config))
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     bound_address = httpd.server_address
     bound_host = str(bound_address[0])
     bound_port = int(bound_address[1])
     local_origin = f"http://{bound_host}:{bound_port}"
-    viewer_query = _viewer_query(upstream_url)
-    query_suffix = f"?{viewer_query}" if viewer_query else ""
+    viewer_query = _viewer_query(upstream_url, capability_path)
     return VncProxySession(
         origin=local_origin,
-        local_url=f"{local_origin}/vnc.html{query_suffix}",
-        websocket_path=_websocket_path(upstream_url),
+        local_url=f"{local_origin}{capability_path}/vnc.html?{viewer_query}",
+        websocket_path=capability_path,
         _httpd=httpd,
         _client=client,
     )

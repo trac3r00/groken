@@ -6,7 +6,11 @@ import httpx
 import pytest
 from pydantic import AnyHttpUrl, SecretStr
 
-from groken.native_models import NativeOperation
+from groken.native_models import (
+    NativeCompletionRequest,
+    NativeOperation,
+    NativeStatus,
+)
 from groken.native_poller import (
     NativeEnrollmentPending,
     NativePoller,
@@ -20,7 +24,9 @@ class FakeExecutor:
     def __init__(self) -> None:
         self.operations: list[tuple[NativeOperation, Path]] = []
 
-    async def execute(self, operation: NativeOperation, workspace: Path) -> dict[str, object]:
+    async def execute(
+        self, operation: NativeOperation, workspace: Path
+    ) -> dict[str, object]:
         self.operations.append((operation, workspace))
         return {"type": operation.type, "exit_code": 0, "stdout_b64": "bmF0aXZl"}
 
@@ -44,7 +50,9 @@ def configure(state_dir: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_native_poller_reports_enrollment_pending_without_network(tmp_path: Path) -> None:
+async def test_native_poller_reports_enrollment_pending_without_network(
+    tmp_path: Path,
+) -> None:
     requests: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -72,11 +80,66 @@ async def test_native_poller_reports_enrollment_pending_without_network(tmp_path
 
 
 @pytest.mark.anyio
-async def test_native_poller_executes_typed_operation_without_omo(tmp_path: Path) -> None:
+async def test_native_poller_quarantines_rejected_pending_completion(
+    tmp_path: Path,
+) -> None:
+    calls = {"complete": 0, "lease": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v2/worker/lease":
+            calls["lease"] += 1
+            return httpx.Response(204)
+        if request.url.path == "/v2/worker/complete":
+            calls["complete"] += 1
+            return httpx.Response(409, text="conflicting terminal completion")
+        raise AssertionError(request.url.path)
+
+    state_dir = tmp_path / "state"
+    configure(state_dir)
+    pending = state_dir / "pending-native-completion.json"
+    _ = pending.write_text(
+        NativeCompletionRequest(
+            worker_id="groken-box",
+            operation_id="op-poison",
+            lease_id="lease-stale",
+            status=NativeStatus.COMPLETED,
+            result={"type": "terminal.exec", "exit_code": 0},
+        ).model_dump_json()
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://controller.test",
+    )
+    poller = NativePoller(
+        NativePollerSettings(
+            controller_url="https://controller.test",
+            worker_id="groken-box",
+            state_dir=state_dir,
+            workspace_root=tmp_path / "workspace",
+        ),
+        executor=FakeExecutor(),
+        client=client,
+    )
+
+    assert await poller.run_once() is True
+    assert not pending.exists()
+    assert (state_dir / "rejected-native-completion-op-poison.json").is_file()
+    assert await poller.run_once() is False
+    assert calls == {"complete": 1, "lease": 1}
+    await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_native_poller_executes_typed_operation_without_omo(
+    tmp_path: Path,
+) -> None:
     completed: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["authorization"] == "Bearer worker-token-with-at-least-32-characters"
+        assert (
+            request.headers["authorization"]
+            == "Bearer worker-token-with-at-least-32-characters"
+        )
         if request.url.path == "/v2/worker/lease":
             return httpx.Response(
                 200,

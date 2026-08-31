@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass
+from typing import Literal, TypedDict
 
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 _PLACEHOLDER_PREFIX = "\x07GROKEN_SUB_"
@@ -21,7 +22,25 @@ class _Substitution:
     content: str
 
 
-def _failed_result() -> dict:
+class ParsingArgument(TypedDict):
+    type: Literal["ARG"]
+    value: str
+
+
+class ExecutableCommand(TypedDict):
+    name: str
+    args: list[ParsingArgument]
+    full_text: str
+
+
+class ParsingResult(TypedDict):
+    parsing_failed: bool
+    executable_commands: list[ExecutableCommand]
+    has_redirects: bool
+    has_command_substitution: bool
+
+
+def _failed_result() -> ParsingResult:
     return {
         "parsing_failed": True,
         "executable_commands": [],
@@ -30,7 +49,9 @@ def _failed_result() -> dict:
     }
 
 
-def _valid_result(commands: list[dict], redirects: bool, substitutions: bool) -> dict:
+def _valid_result(
+    commands: list[ExecutableCommand], redirects: bool, substitutions: bool
+) -> ParsingResult:
     return {
         "parsing_failed": False,
         "executable_commands": commands,
@@ -345,10 +366,10 @@ def _without_assignment_prefix(text: str) -> str:
     return ""
 
 
-def _parse_text(text: str) -> tuple[list[dict], bool, bool]:
+def _parse_text(text: str) -> tuple[list[ExecutableCommand], bool, bool]:
     _, substitutions = _scan_level(text)
     segments = _split_commands(text, substitutions)
-    commands: list[dict] = []
+    commands: list[ExecutableCommand] = []
     has_redirects = False
     has_substitutions = bool(substitutions)
 
@@ -381,7 +402,7 @@ def _parse_text(text: str) -> tuple[list[dict], bool, bool]:
     return commands, has_redirects, has_substitutions
 
 
-def build_parsing_result(shell_text: str) -> dict:
+def build_parsing_result(shell_text: object) -> ParsingResult:
     """Build the daemon's parsing_result object, failing closed on uncertainty."""
     if not isinstance(shell_text, str):
         return _failed_result()

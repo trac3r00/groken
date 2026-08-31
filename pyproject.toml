@@ -1,9 +1,28 @@
 [project]
 name = "groken"
 version = "0.3.0"
-description = "Protocol-faithful bridge to Grok Bot chat (Cursor aiserver Connect-RPC)"
+description = "Protocol-faithful bridge from agent harnesses (MCP, skills) to Grok Bot cloud computers: chat, bot lifecycle, manual updates with environment preservation, routines, and swarm fan-out"
+readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["httpx>=0.27"]
+license = "MIT"
+authors = [{ name = "trac3r00" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = ["httpx>=0.27", "pydantic>=2.11", "typing_extensions>=4.12"]
+
+[project.urls]
+Homepage = "https://github.com/trac3r00/groken"
+Repository = "https://github.com/trac3r00/groken"
+Documentation = "https://github.com/trac3r00/groken#readme"
 
 [project.scripts]
 groken = "groken.cli:main"
@@ -16,13 +35,34 @@ groken-poller = "groken.poller_main:main"
 groken-worker = "groken.worker_main:main"
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.9"]
+mcp = ["mcp>=2.0,<2.1"]
+share = [
+  "anyio>=4.9",
+  "fastapi>=0.116",
+  "uvicorn>=0.35",
+]
 worker = [
   "anyio>=4.9",
   "fastapi>=0.116",
-  "pydantic>=2.11",
   "uvicorn>=0.35",
 ]
 
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "ruff==0.16.2", "basedpyright==1.39.8"]
+
 [tool.setuptools.packages.find]
 include = ["groken*"]
+
+[tool.setuptools.data-files]
+skill = ["skill/SKILL.md"]
+docs = [
+  "docs/capabilities-0.30.0.md",
+  "docs/direct-worker-runbook.md",
+  "docs/native-operation-plane.md",
+  "docs/provider-e2e-runbook.md",
+]
+"docs/assets" = ["docs/assets/groken-hero.png"]

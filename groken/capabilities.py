@@ -3,15 +3,24 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, cast
 
+from .gateway_legacy_rows import LEGACY_GATEWAY_ROWS
+from .gateway_versions import (
+    CURRENT_030_NO_ARGS,
+    CURRENT_030_REPLY_OVERRIDES,
+    current_027_command_names,
+    current_030_command_names,
+)
+
 
 class CommandRisk(StrEnum):
     READ_ONLY = "read_only"
     MUTATING = "mutating"
     SENSITIVE = "sensitive"
     DESTRUCTIVE = "destructive"
+    UNKNOWN = "unknown"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class GatewayCommandSpec:
     name: str
     args: str
@@ -21,115 +30,83 @@ class GatewayCommandSpec:
 
 
 class GatewayReader(Protocol):
+    def own_agent_id(self) -> str: ...
     def command(self, method: str, args: dict[str, object] | None = None) -> object: ...
 
 
-_ROWS = (
-    ("getAgentTranscriptTail", "object", "transcript-page", "transcript"),
-    ("openAgentTail", "object", "transcript-page", "transcript"),
-    ("sendPrompt", "object", "send-result", "send"),
-    ("promptAcceptanceStatus", "object", "acceptance-lookup", "send"),
-    ("respondToWidget", "object", "record-or-null", "widgets"),
-    ("resolveAutoReviewApproval", "object", "void", "approvals"),
-    ("resolveLocalToolPermission", "object", "void", "approvals"),
-    ("dismissWidget", "object", "record", "widgets"),
-    ("submitSecret", "object", "void", "widgets"),
-    ("reactToMessage", "object", "void", "send"),
-    ("voteFeedback", "object", "void", "widgets"),
-    ("listAgents", "none", "array", "roster"),
-    ("countAgents", "none", "count", "roster"),
-    ("searchAgents", "object", "array", "roster"),
-    ("searchMedia", "object", "array", "search"),
-    ("createAgent", "object", "record", "roster"),
-    ("createGroup", "object", "record", "roster"),
-    ("setGroupMembers", "object", "record-or-null", "roster"),
-    ("updateAgent", "object", "record-or-null", "roster"),
-    ("deleteAgents", "object", "record", "roster"),
-    ("duplicateAgent", "object", "record", "roster"),
-    ("kickstartAgent", "object", "record-or-null", "roster"),
-    ("interruptAgentRun", "object", "record", "roster"),
-    ("requestDiskSaverAudit", "object", "record-or-null", "roster"),
-    ("broadcastToAgents", "object", "record", "roster"),
-    ("getCloudAgentInfo", "object", "record-or-null", "cloud_agents"),
-    ("getListenerIntegrations", "none", "record", "listeners"),
-    ("getListenerConnectUrl", "object", "connect-url", "listeners"),
-    ("setAgentUnread", "object", "void", "roster"),
-    ("setAgentHiddenFromSidebar", "object", "void", "roster"),
-    ("setAgentNotificationsEnabled", "object", "void", "roster"),
-    ("setAgentNotifyOnUpdates", "object", "void", "roster"),
-    ("setAgentAvatarBytes", "object", "record-or-null", "roster"),
-    ("getAgentAvatar", "object", "record", "roster"),
-    ("getAgentWorkflows", "object", "array", "workflows"),
-    ("createAgentWorkflow", "object", "array", "workflows"),
-    ("updateAgentWorkflow", "object", "array", "workflows"),
-    ("deleteAgentWorkflow", "object", "array", "workflows"),
-    ("runAgentWorkflowNow", "object", "void", "workflows"),
-    ("importAgentWorkflowText", "object", "import-result", "workflows"),
-    ("importAgentWorkflowUrl", "object", "import-result", "workflows"),
-    ("portAgentLocalSkills", "object", "import-result", "workflows"),
-    ("getConversationOutline", "object", "array", "transcript"),
-    ("skillsCatalog", "none", "array", "skills"),
-    ("syncPluginSkills", "none", "array", "skills"),
-    ("getPluginSyncStatus", "none", "record", "skills"),
-    ("getSkillPublishTargets", "none", "record", "skills"),
-    ("publishSkill", "object", "record", "skills"),
-    ("resyncPublishedSkill", "object", "record", "skills"),
-    ("unpublishSkill", "object", "record", "skills"),
-    ("getSubagents", "object", "array", "subagents"),
-    ("getAsyncTasks", "object", "array", "subagents"),
-    ("getForeverBoxStatus", "object", "box-status", "computer"),
-    ("ensureForeverBox", "object", "box-status", "computer"),
-    ("handBackForeverBox", "object", "void", "computer"),
-    ("startTeachRecording", "object", "record", "teach"),
-    ("stopTeachRecording", "object", "record", "teach"),
-    ("getTeachRecordingStatus", "none", "record", "teach"),
-    ("getTrays", "none", "array", "trays"),
-    ("dismissTray", "object", "void", "trays"),
-    ("clearTrays", "none", "void", "trays"),
-    ("getAgentChannels", "object", "channels-view", "channels"),
-    ("connectChannel", "object", "channels-view", "channels"),
-    ("disconnectChannel", "object", "channels-view", "channels"),
-    ("refreshChannel", "object", "channels-view", "channels"),
-    ("getBoxSecretsStatus", "none", "box-secrets", "secrets"),
-    ("getAgentAutomations", "object", "array", "automations"),
-    ("getAutomationWebhookCredential", "object", "record", "automations"),
-    ("listAllAutomations", "none", "array", "automations"),
-    ("isAgentNetworkEnabled", "none", "boolean", "capabilities"),
-    ("isGlobalSearchEnabled", "none", "boolean", "capabilities"),
-    ("isEgressTunnelAvailable", "none", "boolean", "computer"),
-    ("getSharingState", "none", "record", "sharing"),
-    ("createRoomFromAgent", "object", "record", "sharing"),
-    ("createRoomInvite", "object", "record", "sharing"),
-    ("joinSharedRoom", "object", "record", "sharing"),
-    ("respondToRoomJoinRequest", "object", "record", "sharing"),
-    ("createSharedRoom", "object", "record", "sharing"),
-    ("addOwnAgentToSharedRoom", "object", "record", "sharing"),
-    ("removeOwnAgentFromSharedRoom", "object", "record", "sharing"),
-    ("setSharedRoomTyping", "object", "void", "sharing"),
-    ("leaveSharedRoom", "object", "record", "sharing"),
-    ("setAgentAutomationEnabled", "object", "array", "automations"),
-    ("createAgentAutomation", "object", "array", "automations"),
-    ("updateAgentAutomation", "object", "array", "automations"),
-    ("deleteAgentAutomation", "object", "array", "automations"),
-    ("runAgentAutomationNow", "object", "void", "automations"),
-)
-
 _READ_ONLY = {
-    "getAgentTranscriptTail", "openAgentTail", "promptAcceptanceStatus",
-    "listAgents", "countAgents", "searchAgents", "searchMedia",
-    "getCloudAgentInfo", "getListenerIntegrations", "getAgentAvatar",
-    "getAgentWorkflows", "getConversationOutline", "skillsCatalog",
-    "getPluginSyncStatus", "getSkillPublishTargets", "getSubagents",
-    "getAsyncTasks", "getForeverBoxStatus", "getTeachRecordingStatus",
-    "getTrays", "getAgentChannels", "getBoxSecretsStatus",
-    "getAgentAutomations", "listAllAutomations", "isAgentNetworkEnabled",
-    "isGlobalSearchEnabled", "isEgressTunnelAvailable", "getSharingState",
+    "getAgentTranscriptTail",
+    "openAgentTail",
+    "promptAcceptanceStatus",
+    "listAgents",
+    "countAgents",
+    "searchAgents",
+    "searchMedia",
+    "getCloudAgentInfo",
+    "getListenerIntegrations",
+    "getAgentAvatar",
+    "getAgentWorkflows",
+    "getConversationOutline",
+    "skillsCatalog",
+    "getPluginSyncStatus",
+    "getSkillPublishTargets",
+    "getSubagents",
+    "getAsyncTasks",
+    "getForeverBoxStatus",
+    "getTeachRecordingStatus",
+    "getTrays",
+    "getAgentChannels",
+    "getBoxSecretsStatus",
+    "getAgentAutomations",
+    "listAllAutomations",
+    "isAgentNetworkEnabled",
+    "isGlobalSearchEnabled",
+    "isEgressTunnelAvailable",
+    "getSharingState",
+    "getAgentMemories",
+    "getAgentNotificationAvatar",
+    "getAgentThread",
+    "getAgentTranscript",
+    "getAgentTranscriptPage",
+    "getAgentTranscriptWindow",
+    "getBotTemplateExportPolicy",
+    "getBoxStoreStatus",
+    "getHostSettings",
+    "getHostStatus",
+    "getTranscript",
+    "listBoxMcpServers",
+    "openAgent",
+    "openAgentWindowed",
+    "readAttachmentChunk",
+    "readAttachmentImage",
+    "readAttachmentText",
 }
-_SENSITIVE = {"submitSecret", "getListenerConnectUrl", "getAutomationWebhookCredential"}
+_SENSITIVE = {
+    "submitSecret",
+    "getListenerConnectUrl",
+    "getAutomationWebhookCredential",
+    "completeMcpOAuth",
+    "injectChromeCookies",
+    "requestWebAuthnCeremony",
+    "setBoxSecrets",
+}
 _DESTRUCTIVE = {
-    "deleteAgents", "deleteAgentWorkflow", "unpublishSkill", "handBackForeverBox",
-    "clearTrays", "disconnectChannel", "removeOwnAgentFromSharedRoom",
-    "leaveSharedRoom", "deleteAgentAutomation",
+    "deleteAgents",
+    "deleteAgentWorkflow",
+    "unpublishSkill",
+    "handBackForeverBox",
+    "clearTrays",
+    "disconnectChannel",
+    "removeOwnAgentFromSharedRoom",
+    "leaveSharedRoom",
+    "deleteAgentAutomation",
+    "clearAgentMemories",
+    "clearBoxStoreNow",
+    "deleteAgent",
+    "deleteAgentMemory",
+    "prepareBoxForRecreate",
+    "resetForeverBox",
+    "autoUpdateBoxNow",
 }
 
 
@@ -145,37 +122,88 @@ def _risk(name: str) -> CommandRisk:
 
 GATEWAY_COMMANDS = tuple(
     GatewayCommandSpec(name, args, reply, domain, _risk(name))
-    for name, args, reply, domain in _ROWS
+    for name, args, reply, domain in LEGACY_GATEWAY_ROWS
 )
+LEGACY_GATEWAY_COMMANDS = GATEWAY_COMMANDS
+CURRENT_027_COMMAND_NAMES = current_027_command_names(
+    spec.name for spec in LEGACY_GATEWAY_COMMANDS
+)
+CURRENT_030_COMMAND_NAMES = current_030_command_names(CURRENT_027_COMMAND_NAMES)
+
+
+def _current_command_rows() -> list[dict[str, object]]:
+    legacy = {spec.name: spec for spec in LEGACY_GATEWAY_COMMANDS}
+    rows: list[dict[str, object]] = []
+    for name in CURRENT_030_COMMAND_NAMES:
+        spec = legacy.get(name)
+        rows.append(
+            {
+                "name": name,
+                "args": "none" if name in CURRENT_030_NO_ARGS else "object",
+                "reply": CURRENT_030_REPLY_OVERRIDES.get(
+                    name, spec.reply if spec is not None else "unknown"
+                ),
+                "domain": spec.domain if spec is not None else "unverified",
+                "risk": spec.risk.value
+                if spec is not None
+                else CommandRisk.UNKNOWN.value,
+                "schema_confidence": "partial" if spec is not None else "unknown",
+            }
+        )
+    return rows
 
 
 def capability_manifest(*, include_commands: bool = True) -> dict[str, object]:
+    current_rows = _current_command_rows()
     payload: dict[str, object] = {
-        "official_app_version": "0.23.0",
-        "gateway_command_count": len(GATEWAY_COMMANDS),
-        "domains": dict(Counter(spec.domain for spec in GATEWAY_COMMANDS)),
-        "risks": dict(Counter(spec.risk.value for spec in GATEWAY_COMMANDS)),
+        "official_app_version": "0.30.0",
+        "bundle_version": "0.30.0",
+        "embedded_package_version": "0.30.0",
+        "legacy_embedded_package_version": "0.24.0",
+        "gateway_command_count": len(CURRENT_030_COMMAND_NAMES),
+        "legacy_gateway_command_count": len(LEGACY_GATEWAY_COMMANDS),
+        "version_expectations": {
+            "0.24": {"embedded_package_version": "0.24.0", "command_count": 125},
+            "0.27": {"embedded_package_version": "0.27.0", "command_count": 143},
+            "0.30": {"embedded_package_version": "0.30.0", "command_count": 147},
+        },
+        "contract_verification": {
+            "names_verified": True,
+            "schemas_verified": False,
+            "schema_confidence": "partial",
+        },
+        "legacy_delta": {
+            "added": sorted(
+                set(CURRENT_030_COMMAND_NAMES)
+                - {spec.name for spec in LEGACY_GATEWAY_COMMANDS}
+            ),
+            "removed": sorted(
+                {spec.name for spec in LEGACY_GATEWAY_COMMANDS}
+                - set(CURRENT_030_COMMAND_NAMES)
+            ),
+        },
+        "domains": dict(Counter(str(row["domain"]) for row in current_rows)),
+        "risks": dict(Counter(str(row["risk"]) for row in current_rows)),
+        "local_features": {
+            "harnesses": {"detect": True, "install": True, "uninstall": True},
+            "routines": {"list": True, "new": True, "edit": True, "run": True},
+            "env": {"capture": True, "restore": True, "current_snapshot": True},
+            "update": {"status": True, "manual_trigger": True, "scheduled": False},
+            "swarm": {"send": True, "rooms": True},
+            "mcp": {"available": True, "confirmation_gates": True},
+        },
     }
     if include_commands:
-        payload["commands"] = [
-            {
-                "name": spec.name,
-                "args": spec.args,
-                "reply": spec.reply,
-                "domain": spec.domain,
-                "risk": spec.risk.value,
-            }
-            for spec in GATEWAY_COMMANDS
-        ]
+        payload["commands"] = current_rows
     return payload
 
 
 def live_read_only_status(gateway: GatewayReader) -> dict[str, object]:
-    box_value = gateway.command("getForeverBoxStatus", {})
+    box_value = gateway.command("getForeverBoxStatus", {"id": gateway.own_agent_id()})
     box = cast("dict[str, object]", box_value) if isinstance(box_value, dict) else {}
     return {
         "agent_count": gateway.command("countAgents"),
-        "agent_network_enabled": gateway.command("isAgentNetworkEnabled"),
+        "agent_network_enabled": None,
         "global_search_enabled": gateway.command("isGlobalSearchEnabled"),
         "egress_tunnel_available": gateway.command("isEgressTunnelAvailable"),
         "forever_box": {

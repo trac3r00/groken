@@ -6,6 +6,7 @@ import os
 import plistlib
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 CONTROLLER_WRAPPER = '''#!/bin/sh
 set -a
@@ -59,14 +60,15 @@ def _plists(home: Path) -> tuple[dict[str, object], dict[str, object]]:
 
 def _is_generated(path: Path, expected: dict[str, object]) -> bool:
     try:
-        return plistlib.loads(path.read_bytes()) == expected
+        actual = cast("object", plistlib.loads(path.read_bytes()))
+        return actual == expected
     except (OSError, plistlib.InvalidFileException, ValueError):
         return False
 
 
 def _write(path: Path, data: bytes, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
+    _ = path.write_bytes(data)
     path.chmod(mode)
 
 
@@ -110,7 +112,7 @@ def status() -> dict[str, bool]:
 def uninstall(*, dry_run: bool = False) -> dict[str, str]:
     """Remove only groken1 launch agents and its generated wrapper."""
     controller, tunnel, wrapper = _paths(_home())
-    results = {}
+    results: dict[str, str] = {}
     for name, path in (("controller", controller), ("tunnel", tunnel), ("wrapper", wrapper)):
         if path.exists():
             results[name] = "would remove" if dry_run else "removed"

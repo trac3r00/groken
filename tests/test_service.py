@@ -1,15 +1,32 @@
 import plistlib
 import stat
+from pathlib import Path
+from typing import TypeGuard, cast
+
+import pytest
 
 from groken import service
 
 
-def test_install_generates_fixture_shaped_plists_and_wrapper(tmp_path, monkeypatch):
+def _is_object_dict(value: object) -> TypeGuard[dict[str, object]]:
+    return isinstance(value, dict)
+
+
+def _load_plist(path: Path) -> dict[str, object]:
+    loaded = cast(object, plistlib.loads(path.read_bytes()))
+    if not _is_object_dict(loaded):
+        raise TypeError("expected plist dictionary")
+    return loaded
+
+
+def test_install_generates_fixture_shaped_plists_and_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     results = service.install()
     launch = tmp_path / "Library/LaunchAgents"
-    controller = plistlib.loads((launch / "ai.bob.groken1-controller.plist").read_bytes())
-    tunnel = plistlib.loads((launch / "ai.bob.groken1-tunnel.plist").read_bytes())
+    controller = _load_plist(launch / "ai.bob.groken1-controller.plist")
+    tunnel = _load_plist(launch / "ai.bob.groken1-tunnel.plist")
     assert results == {"controller": "installed", "tunnel": "installed"}
     assert controller == {
         "Label": "ai.bob.groken1-controller",
@@ -38,27 +55,39 @@ def test_install_generates_fixture_shaped_plists_and_wrapper(tmp_path, monkeypat
     assert stat.S_IMODE((launch / "ai.bob.groken1-tunnel.plist").stat().st_mode) == 0o600
 
 
-def test_install_is_byte_stable(tmp_path, monkeypatch):
+def test_install_is_byte_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    service.install()
+    _ = service.install()
     first = [(p, p.read_bytes()) for p in sorted((tmp_path / "Library/LaunchAgents").glob("*.plist"))]
-    service.install(adopt=True)
+    _ = service.install(adopt=True)
     second = [(p, p.read_bytes()) for p in sorted((tmp_path / "Library/LaunchAgents").glob("*.plist"))]
     assert first == second
 
 
-def test_dry_run_makes_no_writes(tmp_path, monkeypatch):
+def test_dry_run_makes_no_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     assert service.install(dry_run=True) == {"controller": "would install", "tunnel": "would install"}
     assert list(tmp_path.rglob("*")) == []
 
 
-def test_existing_manual_install_can_be_skipped_or_adopted(tmp_path, monkeypatch):
+def test_existing_manual_install_can_be_skipped_or_adopted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def decline(_message: str) -> str:
+        return "n"
+
+    def accept(_message: str) -> str:
+        return "y"
+
     monkeypatch.setenv("HOME", str(tmp_path))
     target = tmp_path / "Library/LaunchAgents/ai.bob.groken1-controller.plist"
     target.parent.mkdir(parents=True)
-    target.write_bytes(b"manual")
-    assert service.install(prompt=lambda _: "n")["controller"] == "skipped (manual install)"
+    _ = target.write_bytes(b"manual")
+    assert service.install(prompt=decline)["controller"] == "skipped (manual install)"
     assert target.read_bytes() == b"manual"
-    assert service.install(prompt=lambda _: "y")["controller"] == "adopted"
-    assert plistlib.loads(target.read_bytes())["Label"] == "ai.bob.groken1-controller"
+    assert service.install(prompt=accept)["controller"] == "adopted"
+    assert _load_plist(target)["Label"] == "ai.bob.groken1-controller"

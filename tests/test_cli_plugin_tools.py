@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, ClassVar
+import uuid
+from typing import ClassVar, Literal
 
 import pytest
 
 from groken import cli
 from groken.plugin_tools import resolve_catalog_tool_name
 
-DISCOVERY = {
+DISCOVERY: dict[str, object] = {
     "servers": [
         {
             "serverIdentifier": "user-X",
@@ -27,16 +28,34 @@ DISCOVERY = {
     ]
 }
 
+_ListCall = tuple[Literal["list"], list[str]]
+_ExecuteCall = tuple[Literal["call"], dict[str, object]]
+
 
 class _Client:
-    calls: ClassVar[list[tuple[object, ...]]] = []
+    calls: ClassVar[list[_ListCall | _ExecuteCall]] = []
 
-    def list_sand_mcp_tools(self, servers: list[str]) -> dict[str, Any]:
+    def list_sand_mcp_tools(self, servers: list[str]) -> dict[str, object]:
         self.calls.append(("list", servers))
         return DISCOVERY
 
-    def execute_sand_mcp_tool(self, **kwargs: object) -> dict[str, Any]:
-        self.calls.append(("call", kwargs))
+    def execute_sand_mcp_tool(
+        self,
+        *,
+        server_identifier: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        tool_call_id: str,
+        agent_id: str,
+    ) -> dict[str, object]:
+        call: dict[str, object] = {
+            "server_identifier": server_identifier,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "tool_call_id": tool_call_id,
+            "agent_id": agent_id,
+        }
+        self.calls.append(("call", call))
         return {"result": {"result": {"case": "success", "value": {"content": []}}}}
 
 
@@ -87,10 +106,13 @@ def test_tools_call_requires_explicit_confirmation(monkeypatch: pytest.MonkeyPat
 
 
 def test_tools_call_executes_confirmed_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    def fake_uuid4() -> str:
+        return "call-1"
+
     _Client.calls = []
     monkeypatch.setattr(cli, "SandClient", _Client)
     monkeypatch.setattr(cli, "_manager", _Manager)
-    monkeypatch.setattr(cli.uuid, "uuid4", lambda: "call-1")
+    monkeypatch.setattr(uuid, "uuid4", fake_uuid4)
 
     cli.cmd_tools_call("user-X", "search", '{"query":"grok"}', "groken", yes=True)
 

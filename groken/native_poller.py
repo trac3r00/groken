@@ -74,7 +74,9 @@ class NativePoller:
         _ = response.raise_for_status()
         leased = NativeLeasedOperation.model_validate(response.json())
         try:
-            workspace = resolve_workspace(self._settings.workspace_root, leased.workspace)
+            workspace = resolve_workspace(
+                self._settings.workspace_root, leased.workspace
+            )
             result = await self._executor.execute(leased.operation, workspace)
             completion = NativeCompletionRequest(
                 worker_id=self._settings.worker_id,
@@ -123,21 +125,33 @@ class NativePoller:
 
     def _load_config(self) -> PollerConfig:
         if not self._config_file.is_file():
-            raise NativeEnrollmentPending("native poller is waiting for worker enrollment")
+            raise NativeEnrollmentPending(
+                "native poller is waiting for worker enrollment"
+            )
         config = PollerConfig.model_validate_json(self._config_file.read_text())
-        if config.controller_url.rstrip("/") != self._settings.controller_url.rstrip("/"):
+        if config.controller_url.rstrip("/") != self._settings.controller_url.rstrip(
+            "/"
+        ):
             raise ValueError("controller URL differs from enrolled controller URL")
         return config
 
     async def _flush_pending(self, headers: dict[str, str]) -> bool:
         if not self._pending_file.is_file():
             return False
-        completion = NativeCompletionRequest.model_validate_json(self._pending_file.read_text())
+        completion = NativeCompletionRequest.model_validate_json(
+            self._pending_file.read_text()
+        )
         response = await self._client.post(
             "/v2/worker/complete",
             headers=headers,
             json=completion.model_dump(mode="json"),
         )
+        if response.status_code == 409:
+            rejected = self._settings.state_dir / (
+                f"rejected-native-completion-{completion.operation_id}.json"
+            )
+            os.replace(self._pending_file, rejected)
+            return True
         _ = response.raise_for_status()
         self._pending_file.unlink()
         return True

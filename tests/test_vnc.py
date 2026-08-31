@@ -50,4 +50,4 @@ def test_display_comes_from_configured_bots_forever_box() -> None:
 
 def test_missing_vnc_url_is_clear():
     with pytest.raises(ValueError, match="missing vncUrl"):
-        vnc_url({"networkToken": "x", "podId": "p"})
+        _ = vnc_url({"networkToken": "x", "podId": "p"})

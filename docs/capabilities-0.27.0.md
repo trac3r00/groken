@@ -1,6 +1,8 @@
-# Grok Bot 0.23.0 capability map
+# Historical Grok Bot capability map (through 0.27.0)
 
-Evidence date: 2026-08-21. Sources:
+Historical evidence date: 2026-08-26 (0.27.0 audit); baseline evidence date:
+2026-08-21 (0.23.0). For the current 0.30.0 audit, see
+[`capabilities-0.30.0.md`](capabilities-0.30.0.md). Sources:
 
 - Official app archive: `/Applications/Grok Bot.app/Contents/Resources/app.asar`
 - Coordinator bundle: `dist/node-agent-coordinator/main.cjs`
@@ -12,6 +14,31 @@ This is an inventory, not an arbitrary-command API. Groken deliberately does not
 expose a generic `command(method, args)` tool because the same registry contains
 secret submission, approval resolution, deletion, publishing, sharing, and
 computer handback operations.
+
+## Historical: 0.27.0 state (2026-08-26)
+
+The audited 0.27.0 app exposed 143 gateway commands. At that time, the
+`groken capabilities` manifest reported the 0.27 command rows and legacy delta against the
+audited baseline, per-domain and per-risk counts, and contract-verification
+confidence. `groken inspect-app --fail-on-drift` verifies the inventory against
+the installed bundle, including versioned critical fingerprints for
+hash-mismatched 0.27 builds. Update commands verified for 0.27 include the
+image-precedence `updateForeverBox({id})` path used by `groken bot update`.
+
+Groken exposes the read-only `grok_bot_status` MCP tool, while sensitive,
+mutating, and destructive gateway additions remain unavailable through generic
+automation.
+
+### Historical: 0.24.0 update (2026-08-25)
+
+The 0.24.0 app exposed 125 gateway commands: all 87 baseline commands below
+plus 38 additions, with no removals or renames. The additions covered agent
+memories and transcript pagination, host/store/MCP status, attachments, MCP
+OAuth, WebAuthn, box recreation/update controls, cookies, secrets, and
+destructive reset/delete operations.
+
+The detailed inventory below remains the sourced 0.23.0 baseline and protocol
+rationale; it is historical evidence, not the current command count.
 
 ## Architecture found
 

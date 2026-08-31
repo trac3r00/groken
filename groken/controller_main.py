@@ -32,6 +32,7 @@ def main() -> None:
         model_base_url=required_env("GROKEN_MODEL_BASE_URL"),
         model_api_key=required_env("GROKEN_MODEL_API_KEY"),
         model=os.environ.get("GROKEN_MODEL", "llm-pool/codex/gpt-5.6-luna"),
+        team_alert_team=os.environ.get("GROKEN_TEAM_ALERT_TEAM", ""),
     )
     uvicorn.run(
         create_controller_app(settings),

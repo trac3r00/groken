@@ -1,11 +1,14 @@
+from collections.abc import Sequence
+from typing import Literal
+
 import pytest
 
-from groken.parsing import build_parsing_result
+from groken.parsing import ExecutableCommand, ParsingResult, build_parsing_result
 
-ARG = "ARG"
+ARG: Literal["ARG"] = "ARG"
 
 
-def command(name, *args, full_text=None):
+def command(name: str, *args: str, full_text: str | None = None) -> ExecutableCommand:
     return {
         "name": name,
         "args": [{"type": ARG, "value": value} for value in args],
@@ -13,7 +16,12 @@ def command(name, *args, full_text=None):
     }
 
 
-def result(commands=(), *, redirects=False, substitution=False):
+def result(
+    commands: Sequence[ExecutableCommand] = (),
+    *,
+    redirects: bool = False,
+    substitution: bool = False,
+) -> ParsingResult:
     return {
         "parsing_failed": False,
         "executable_commands": list(commands),
@@ -23,7 +31,7 @@ def result(commands=(), *, redirects=False, substitution=False):
 
 
 # Appendix C parsingResult contract table.
-CONTRACT_CASES = [
+CONTRACT_CASES: list[tuple[str, ParsingResult]] = [
     ("", result()),
     ("   \t\n", result()),
     (
@@ -78,7 +86,7 @@ CONTRACT_CASES = [
 
 
 @pytest.mark.parametrize(("shell_text", "expected"), CONTRACT_CASES)
-def test_appendix_c_contract(shell_text, expected):
+def test_appendix_c_contract(shell_text: str, expected: ParsingResult) -> None:
     assert build_parsing_result(shell_text) == expected
 
 
@@ -94,7 +102,7 @@ def test_appendix_c_contract(shell_text, expected):
         "$( )",
     ],
 )
-def test_malformed_or_ambiguous_input_fails_closed(shell_text):
+def test_malformed_or_ambiguous_input_fails_closed(shell_text: str) -> None:
     assert build_parsing_result(shell_text) == {
         "parsing_failed": True,
         "executable_commands": [],
@@ -103,14 +111,14 @@ def test_malformed_or_ambiguous_input_fails_closed(shell_text):
     }
 
 
-def test_backtick_substitution_is_reported_and_parsed():
+def test_backtick_substitution_is_reported_and_parsed() -> None:
     assert build_parsing_result("echo `date`") == result(
         [command("echo", "`date`", full_text="echo `date`"), command("date")],
         substitution=True,
     )
 
 
-def test_result_uses_only_the_wire_contract_keys():
+def test_result_uses_only_the_wire_contract_keys() -> None:
     parsed = build_parsing_result("printf %s ok")
 
     assert set(parsed) == {
