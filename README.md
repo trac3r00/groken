@@ -1,330 +1,350 @@
 # groken
 
-## Release 0.3.0
+<p align="center"><img src="docs/assets/groken-hero.png" alt="groken connects agent harnesses to Grok Bot cloud computers" width="900"></p>
 
-Version 0.3.0 adds configured Bot control, status and plugin tooling, and a
-ready-checked VNC flow that opens the selected Bot's desktop in the browser.
+<p align="center"><strong>Use persistent Grok Bot cloud computers from your terminal or AI-agent harness.</strong></p>
 
-Real-time bridge into Grok Bot chat, built as a protocol-faithful client of the
-official desktop app: genuine Cursor OAuth PKCE login (`redirectTarget=sand`),
-app-identical headers/checksum, and the same per-sandbox gateway the app uses.
+Groken is a macOS client for the official Grok Bot desktop app. It gives CLI,
+MCP, and skill-based agents typed access to named Bots, their cloud computers,
+transcripts, plugins, teams, and shared rooms while keeping account credentials
+on your machine.
 
-## How it works (verified live)
+- **Protocol-faithful:** OAuth PKCE, `EnsureSandBox`, typed gateway commands,
+  and SSE events follow the official app contract.
+- **Harness-ready:** install MCP or `SKILL.md` integration for Claude, Codex,
+  Cursor, OpenCode, omo/senpi, Hermes, and other supported agents.
+- **Operational:** chat, VNC, native execution, Bot updates, environment
+  capture/restore, routines, teams, swarms, and revocable sharing.
+- **Fail-closed:** unknown app drift, unsafe generic gateway dispatch, and
+  unconfirmed mutations are not silently accepted.
 
-1. OAuth PKCE sign-in against cursor.com, token issued to the real app client.
-2. `aiserver.v1.GrokBotService/EnsureSandBox` (Connect-RPC, api2.cursor.sh)
-   returns the pod's `gatewayUrl`, `gatewayToken`, `networkToken`.
-3. All chat happens on the pod gateway:
-   - `POST {gatewayUrl}/api/<command>` with `Authorization: Bearer <gatewayToken>`
-     and `x-anyrun-network-token: <networkToken>`
-   - `listAgents` -> roster (id/name/running)
-   - `sendPrompt { agentId, prompt, clientNonce }` -> `{accepted: true}`
-   - `getAgentTranscriptTail { id }` -> recent entries
-   - `GET /events?channels=...` -> SSE realtime stream
-4. The gateway token is short-lived; `GatewayManager` re-runs EnsureSandBox on
-   failure and retries once. `clientNonce` makes sends idempotent.
+> Groken requires a legitimate Grok Bot account.
 
-## Install (fresh machine)
+## Requirements
 
-```bash
-git clone <this repo> ~/groken && cd ~/groken   # or copy the directory
-uv venv .venv && uv pip install -p .venv/bin/python -e ".[mcp]"
-```
+- macOS
+- Python 3.11 or newer
+- [`uv`](https://docs.astral.sh/uv/)
+- the official Grok Bot app and an account permitted to use it
+- GitHub repository access while Groken remains private
 
-Uninstall: delete `~/groken`, `~/.config/groken/`, the `groken` entry in
-`~/.hermes/config.yaml` `mcp_servers:`, and `~/.agents/skills/groken/`.
-
-## Setup
+## Quick start
 
 ```bash
-cd ~/groken
-.venv/bin/groken login             # sign in with the Grok Bot account
-.venv/bin/groken list              # * marks this machine's configured Bot
-.venv/bin/groken configure         # choose interactively
-.venv/bin/groken configure groken  # or choose by name/id
-.venv/bin/groken connect           # open the configured Bot's computer
-.venv/bin/groken connect repo-ops  # one-off connection; default is unchanged
+git clone git@github.com:trac3r00/groken.git
+cd groken
+uv tool install --editable ".[mcp,share,worker]"
+
+groken login
+groken doctor
+groken ask "Inspect the project and report the top three risks"
 ```
 
-## CLI
+`groken login` opens the browser and stores tokens at
+`~/.config/groken/tokens.json` with owner-only permissions. First use creates a
+Bot named `groken` when necessary. To use an existing Bot instead:
 
 ```bash
-.venv/bin/groken list                           # list Bots; * marks configured default
-.venv/bin/groken configure [BOT]                # set this machine's default Bot
-.venv/bin/groken connect [BOT]                  # auto-connect configured/named Bot VNC
-.venv/bin/groken status                         # Bot, host, storage, secrets, and MCP health
-.venv/bin/groken tools list [SERVER ...]        # discover connected plugin tools
-.venv/bin/groken tools call SERVER TOOL --args-json '{}' --yes
-.venv/bin/groken agents                         # legacy raw roster
-.venv/bin/groken send "text" [agent]            # send, without waiting
-.venv/bin/groken ask "text" [agent]             # send and wait for the reply
-.venv/bin/groken ask "text" --stream            # stream reply chunks to a TTY
-.venv/bin/groken tail [agent]                   # recent transcript entries
-.venv/bin/groken tail [agent] -n 50 --json      # structured, bounded output
-.venv/bin/groken tail [agent] --since TIMESTAMP  # entries after an ISO timestamp
-.venv/bin/groken tail [agent] --full             # include complete entry bodies
-.venv/bin/groken exec COMMAND [--cwd DIR]       # native remote command execution
-.venv/bin/groken service install                # install controller and tunnel services
-.venv/bin/groken service status                 # show service presence
-.venv/bin/groken service uninstall              # remove groken services
-.venv/bin/groken inspect-app                    # compare app command table with groken
-.venv/bin/groken inspect-app --fail-on-drift    # exit nonzero when drift is found
-.venv/bin/groken vnc                             # open configured Bot's computer and auto-connect
-.venv/bin/groken vnc --display 1                 # explicitly override with display N
-.venv/bin/groken doctor                         # run tiered diagnostics
-.venv/bin/groken events                         # raw SSE event stream
-.venv/bin/groken sandboxes                      # cloud computer status
-.venv/bin/groken refresh                        # refresh tokens manually
+groken list
+groken configure NAME
+groken ask "Summarize the current work"
 ```
 
-`status` is secret-safe: it reports the configured Bot display, host/update
-state, box storage, secret application state, and broken/connected box MCP
-servers without returning secret names or values.
+Run `groken guide` at any time to print the first-run workflow again.
 
-`tools list` queries the backend plugin catalog using the existing Grok Bot
-session; plugin OAuth tokens remain backend-side. `tools call` executes one
-exact server/tool/JSON operation and always requires interactive confirmation
-or explicit `--yes`. A timeout may be indeterminate for mutating tools, so do
-not retry unless repeating the operation is safe.
-
-`tail --json` emits structured entries. Use `-n` or `--limit` to bound the
-result, `--since` to filter by timestamp, and `--full` when abbreviated bodies
-are not enough. `ask --stream` is intended for interactive terminals and falls
-back to the normal reply when output is not a TTY.
-
-`doctor` runs seven secret-safe tiers: tokens, gateway, controller, model,
-execDaemon, pod identity, and MCP self-handshake. It continues through soft
-failures and returns failure when authentication or the gateway is unavailable.
-`inspect-app` checks the installed app bundle for command-table drift.
-
-`vnc` resolves the locally configured Bot, reads that Bot's official
-`getForeverBoxStatus`, ensures its computer when absent, waits for a live RFB
-connection, and opens noVNC with autoconnect enabled. Use `--display N` only to
-explicitly override the Bot-derived display.
-
-`exec` uses the native-mcp operation plane. `vnc` uses the Bot gateway's computer
-status plus a token-injecting loopback proxy; it never asks another Bot or guesses
-from account-wide Chrome processes. Native execution is remote, so review the
-command, working directory, and timeout before running it.
-
-## Dedicated Bot (auto-provisioned)
-
-First use creates a Bot named `groken` on the account (gateway `createAgent`,
-idempotent via clientNonce) and caches its id in `~/.config/groken/config.json`.
-All CLI/MCP calls default to it; the user's other Bots are never touched unless
-explicitly named. Custom name: `{"bot_name": "..."}` in config.json or
-`GROKEN_BOT_NAME` env. The config is local to each installation, so multiple
-machines can bind to the same account Bot or choose different names independently.
-Each machine runs its own loopback VNC proxy; concurrent viewers are supported by
-the shared cloud desktop.
-
-## What groken connects
-
-```
-your agent/script ── groken (CLI | MCP) ── Grok Bot gateway ── dedicated Bot
-                                                              ├─ cloud VM (terminal / browser / files)
-                                                              ├─ Bot plugins (Slack, GitHub, Notion, Google Drive,
-                                                              │   Composio, Browserbase, AWS Agents, Context7, ...)
-                                                              ├─ routines & schedules (server-side, survives shutdown)
-                                                              └─ your local Mac (via the app's local-exec daemon)
-```
-
-**Agent hosts**
-- Hermes: already registered (`mcp_servers.groken` in `~/.hermes/config.yaml`).
-- omo/senpi: skill installed at `~/.agents/skills/groken` — say "groken으로 위임" to route.
-- Any MCP client (Claude Desktop, Cursor, Zed): add the stdio server
-  `{"mcpServers": {"groken": {"command": "~/groken/.venv/bin/groken-mcp"}}}`.
-
-**Scripts & automation**
-- Shell pipelines: `groken ask "..."` exits 0 with the reply on stdout — composes with
-  `cron`/`launchd`, CI steps, or `xargs` fan-out.
-- Reactive flows: `groken events` streams gateway SSE — pipe into `jq` to trigger on
-  transcript appends or agent state flips.
-
-**Through the Bot (indirect reach)**
-- Anything the Bot's plugins touch (Slack post, GitHub issue, Notion page...) is one
-  `ask` away — the Bot executes with its own logins on the cloud computer.
-- Bot-side routines can fire on Slack/GitHub events and report back into the same
-  conversation groken reads.
-
-## Guardrails & errors
-
-The dedicated Bot's standing instructions (verify post-action state, never
-silently delete, ask before destructive ops, stop-and-report instead of
-looping) live in `groken/provisioning.py` (`WORKER_DESCRIPTION`); existing Bots
-are upgraded in place via `updateAgent` on next resolution. CLI errors are
-translated to actionable hints by `groken/errors.py`. Design rationale:
-`docs/painpoints-2026-08-19.md`.
-
-## Install into your AI agents (you choose)
+## Connect an agent harness
 
 ```bash
-groken install                # interactive: pick from detected agents
-groken install --all          # every detected agent, no prompt
-groken install codex cursor   # exactly these
-groken install --dry-run      # show what would change
-groken uninstall              # same selection UX, removes groken entries
+groken install                 # interactively select detected harnesses
+groken install --all           # install into every detected harness
+groken install codex cursor    # install only named targets
+groken install --dry-run       # preview changes
+groken uninstall --all         # remove supported integrations
 ```
 
-Nothing is installed without an explicit choice: bare `groken install` lists the
-detected agents and waits for a selection, and in a non-interactive shell it
-refuses with the detected list instead of guessing. Merges preserve sibling
-servers, re-running is idempotent, and every touched file gets a `.groken-bak`
-copy first.
+Installation preserves sibling configuration, is idempotent, and creates a
+`.groken-bak` backup before changing a harness config. Restart the harness after
+installation so it reloads the MCP server or skill.
 
-Run `groken` with no arguments for the first-run guide (login → install → doctor).
+| Target | Integration |
+| --- | --- |
+| `claude-code`, `claude-desktop` | MCP |
+| `claude-skills` | `SKILL.md` |
+| `codex`, `cursor`, `vscode`, `gemini-cli` | MCP |
+| `codex-skills`, `cursor-skills` | `SKILL.md` |
+| `opencode`, `windsurf`, `kiro`, `hermes` | MCP |
+| `gjc`, `gjc-skills` | MCP or `SKILL.md` |
+| `omo`, `omo-skill` | omo/senpi skill |
+| `openclaw` | detected only; config schema is not yet written |
 
-| Agent | Surface written |
-|---|---|
-| Claude Code | `~/.claude.json` mcpServers + `~/.claude/skills/groken/` |
-| Claude Desktop | `claude_desktop_config.json` mcpServers |
-| Codex | `~/.codex/config.toml` `[mcp_servers.groken]` |
-| Cursor | `~/.cursor/mcp.json` |
-| VS Code / Copilot | `Code/User/mcp.json` servers |
-| Gemini CLI | `~/.gemini/settings.json` |
-| OpenCode | `~/.config/opencode/opencode.json` mcp |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
-| Kiro | `~/.kiro/settings/mcp.json` |
-| Hermes | `~/.hermes/config.yaml` mcp_servers |
-| omo/senpi | `~/.agents/skills/groken/` |
+## Everyday commands
 
-Agents that are not installed are skipped, not errored.
-
-## MCP server (works with every MCP host)
+### Chat and computer access
 
 ```bash
-groken-mcp                                  # stdio (Claude Desktop, Cursor, Zed, Hermes, omo)
-groken-mcp --transport http --port 8321     # streamable HTTP  -> http://127.0.0.1:8321/mcp
-groken-mcp --transport sse  --port 8322     # legacy SSE       -> http://127.0.0.1:8322/sse
+groken ask "task" [BOT]         # send and wait for the reply
+groken ask "task" --stream      # stream reply chunks in a TTY
+groken send "task" [BOT]        # fire-and-forget
+groken tail [BOT] -n 50 --json  # inspect recent transcript entries
+groken connect [BOT]            # open the Bot computer in a browser
+groken status --json            # Bot, host, secrets, MCP, and local health
+groken doctor                   # run the complete diagnostic ladder
 ```
 
-All three transports serve the same seven tools. stdio config (most hosts):
+Task text is sent unchanged. Groken adds no local refusal filter or jailbreak
+rewrite. The dedicated Bot does carry standing instructions to verify results,
+avoid silent destructive changes, and report blockers instead of looping.
 
-```json
-{ "mcpServers": { "groken": { "command": "/Users/bob/groken/.venv/bin/groken-mcp" } } }
-```
+All Bots on one account share cloud files, browser sessions, and logins. Their
+conversations and displays remain individually addressable.
 
-Remote/containerized hosts that speak streamable HTTP point at `http://<host>:8321/mcp`;
-older SSE-only clients use `http://<host>:8322/sse`. Bind beyond localhost with
-`--host 0.0.0.0` only behind your own auth layer — the server itself is unauthenticated
-and inherits your Grok Bot session.
-
-Bot tools: `grok_bot_list`, `grok_bot_send`, `grok_bot_ask`,
-`grok_bot_capabilities`, and `grok_bot_tail`. Plugin tools:
-`grok_plugin_list` and `grok_plugin_call`; calls are blocked until
-`confirmed=true` is supplied for the exact reviewed operation. Bot arguments
-accept an id or display name; omit them to use the dedicated groken Bot.
-
-## Remote OMO worker
-
-The optional worker turns a computer with OMO installed into a narrow HTTP job
-runner. It never exposes a shell endpoint: clients submit an OMO task scoped to
-a relative workspace, poll by job id, and may request a signed completion
-callback.
+### Bot lifecycle and environment
 
 ```bash
-uv pip install -p .venv/bin/python -e ".[worker]"
-export GROKEN_WORKER_BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"
-groken-worker --host 127.0.0.1 --port 8765 \
-  --workspace-root /workspace \
-  --omo-command ~/.local/bin/omo
+groken bot add NAME
+groken bot duplicate SOURCE NEW
+groken bot update [BOT]
+groken bot env capture [BOT]
+groken bot env restore [BOT]
 ```
 
-Bootstrap exactly once over an authenticated HTTPS tunnel. The model key and
-worker token are stored in owner-only files; do not send them through Bot chat
-or command-line arguments.
+Updates are manual. Environment capture records package and application
+inventory before an update; restore is diff-based, confirm-first, resumable,
+and does not bypass macOS security prompts. Groken intentionally provides no
+Bot deletion command.
+
+### Plugins and routines
 
 ```bash
-curl -X POST https://worker.example.com/v1/bootstrap \
-  -H "X-Bootstrap-Token: $GROKEN_WORKER_BOOTSTRAP_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data @bootstrap.json
+groken tools list [SERVER...]
+groken tools call SERVER TOOL --args-json '{}' --yes
+
+groken routine list
+groken routine new NAME
+groken routine edit NAME
+groken routine run NAME --event manual
 ```
 
-Submit work asynchronously and correlate the completion to the originating
-session:
+Plugin credentials remain in the Grok Bot backend. Calls require an interactive
+confirmation or explicit `--yes`. Local routines live under
+`~/.config/groken/routines/` and support `manual`, `pre-update`, `post-update`,
+and `env-restore` events; they are not a scheduler.
 
-```json
-{
-  "task": "Run the checkout QA suite and report verified results",
-  "workspace": "qa/checkout",
-  "origin_session_id": "session-abc",
-  "callback_url": "https://controller.example.com/v1/callbacks",
-  "callback_token": "a-long-random-bearer-token"
-}
-```
+### Native teams and swarms
 
-`POST /v1/jobs` returns HTTP 202 and a `job_id`; `GET /v1/jobs/{job_id}` returns
-the durable status record. The local `groken-callback` relay authenticates the
-completion, appends it to an owner-only JSONL ledger, and emits
-`remote.worker.completed` into Clawhip.
-
-Bind both services to loopback. Put them behind a named tunnel or private
-network with its own access policy, use distinct random tokens for worker and
-callback authentication, and rotate the one-time bootstrap token by restarting
-the worker without it after provisioning.
-
-### Direct mode: no Grok Bot in the task path
-
-When inbound tunnels to the sandbox are unavailable, run the controller on the
-origin computer and let `groken-poller` maintain an outbound HTTPS connection.
-The Grok Bot is not messaged or consulted: the remote OMO process leases tasks,
-executes them in `/workspace`, and posts the result directly to the controller.
-
-```text
-origin OMO/Hermes -> local controller <- outbound remote poller -> remote OMO
-```
-
-Start the controller on the origin and expose only that loopback port through a
-private or named HTTPS tunnel:
+A native team is one persistent Grok Bot group with two to six existing Bots:
 
 ```bash
-export GROKEN_CONTROLLER_TOKEN="$(openssl rand -hex 32)"
-export GROKEN_ENROLLMENT_TOKEN="$(openssl rand -hex 32)"
-export GROKEN_REMOTE_WORKER_TOKEN="$(openssl rand -hex 32)"
-export GROKEN_MODEL_BASE_URL="https://models.example.com/v1"
-export GROKEN_MODEL_API_KEY="..."
-groken-controller --host 127.0.0.1 --port 18766
+groken team create delivery --bots researcher,coder,reviewer --description "Ship reviewed changes"
+groken team members delivery
+groken team ask delivery "Implement and review the release"
 ```
 
-Enroll and start the remote worker once:
+A swarm is an external fan-out from Groken. Results stay in requested Bot order,
+and partial failures do not discard successful answers:
 
 ```bash
-GROKEN_CONTROLLER_URL="https://controller.example.com" \
-GROKEN_ENROLLMENT_TOKEN="..." \
-groken-poller --worker-id groken-box
+groken swarm send --bots alice,bob "Compare the two designs"
+groken swarm send --bots alice,bob,carol --rounds 2 "Agree on one design"
+groken swarm rooms
 ```
 
-Enrollment stores the controller token and model configuration in owner-only
-files. Subsequent poller restarts require only the controller URL; job traffic
-uses the worker token. Submit locally with `POST /v1/jobs`, poll
-`GET /v1/jobs/{job_id}`, and receive the Clawhip event
-`remote.worker.completed` when the remote OMO run finishes.
+`--rounds` accepts 1–3 rounds and relays peer answers between rounds. There is no
+background swarm service.
 
-## Capability and operations references
+## Share one Bot
 
-- [`docs/capabilities-0.23.0.md`](docs/capabilities-0.23.0.md) — all 87 typed
-  gateway commands, 20 coordinator commands, risk classes, and verified live
-  read-only observations.
-- [`docs/direct-worker-runbook.md`](docs/direct-worker-runbook.md) — durable
-  leases, idempotent submission/completion, poller recovery, and trust boundary.
-- [`docs/native-operation-plane.md`](docs/native-operation-plane.md) — direct
-  terminal/file APIs, native CLI/MCP usage, proven ExecService metadata, and
-  browser/gateway adapter contracts.
+An owner can issue a revocable token pinned to one immutable Bot id without
+copying OAuth or refresh credentials to the recipient.
 
-## Tests
+Owner:
 
 ```bash
+groken share create --name bob --bot research-bot
+groken share serve                 # foreground, 127.0.0.1:8787 by default
+groken share list
+groken share revoke bob
+```
+
+Recipient:
+
+```bash
+chmod 600 token.txt
+groken share connect https://relay.example.com --token-file token.txt
+groken ask "Start the task"
+groken tail
+groken exec "pwd"
+groken vnc
+groken share disconnect
+```
+
+The token is displayed once and stored only as a hash by the owner. Plain HTTP
+is accepted only on loopback. Put the relay behind HTTPS, disable proxy
+buffering for event streams, and treat VNC URLs as secrets.
+
+A share controls account access, not VM isolation: Bots on the same account
+still share their cloud computer. Review the security model below before
+exposing a relay.
+
+## Native operations and remote workers
+
+Groken includes two advanced operation planes in addition to normal Bot chat:
+
+1. **Native operation plane** — typed remote exec, shell, file, process, and VNC
+   operations through a local controller. Start with `groken exec`, `groken vnc`,
+   or `groken-native --help`, then read
+   [`docs/native-operation-plane.md`](docs/native-operation-plane.md).
+2. **Remote OMO worker plane** — durable task submission, leases, callbacks,
+   polling, and idempotent completion for a remote OMO process. It does not
+   expose a generic shell endpoint. See
+   [`docs/direct-worker-runbook.md`](docs/direct-worker-runbook.md).
+
+Install and inspect local services with:
+
+```bash
+groken service install
+groken service status
+groken service uninstall
+```
+
+These services are optional. Bind controllers and relays to loopback and expose
+them only through a private or authenticated HTTPS tunnel.
+
+## MCP server
+
+`groken install` writes the right configuration for supported hosts. Manual
+launches use the same typed tool set on every transport:
+
+```bash
+groken-mcp                                  # stdio
+groken-mcp --transport http --port 8321     # streamable HTTP
+groken-mcp --transport sse --port 8322      # legacy SSE
+```
+
+Main tools include:
+
+- `grok_bot_ask`, `grok_bot_send`, `grok_bot_list`, `grok_bot_tail`
+- `grok_bot_status`, `grok_bot_capabilities`
+- `grok_bot_add`, `grok_bot_duplicate`, `grok_bot_update_*`
+- `grok_env_capture`, `grok_env_restore`
+- `grok_plugin_list`, `grok_plugin_call`
+- `grok_routine_list`, `grok_routine_run`
+- `grok_team_create`, `grok_team_members`, `grok_team_ask`
+- `grok_swarm_send`
+
+Mutating MCP operations require the exact reviewed call to include
+`confirmed=true`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  H[Agent harness] --> C[Groken CLI / MCP / skill]
+  C --> O[OAuth + EnsureSandBox]
+  O --> G[Typed per-pod gateway]
+  G --> B[Named Grok Bot]
+  B --> V[Shared cloud computer]
+  B --> P[Backend plugins]
+  C --> L[Local config, routines, services]
+```
+
+The client calls `aiserver.v1.GrokBotService/EnsureSandBox` over Connect-RPC,
+then uses the returned per-pod gateway token and network token for typed
+`POST /api/<command>` operations and `/events` SSE. Gateway failures trigger one
+fresh sandbox mint and one retry; prompt nonces preserve send idempotency.
+
+Groken does not expose the gateway as arbitrary `method + args` automation.
+Risky operations receive explicit typed adapters, confirmation boundaries, and
+focused tests.
+
+## App compatibility
+
+The current audited profile matches the installed Grok Bot 0.30.0 app:
+
+- 147 gateway commands
+- exact app ASAR and coordinator hashes
+- six critical handler/validator fingerprints
+- fail-closed detection for unknown hashes, command drift, or fingerprint drift
+- 0.24 and 0.27 historical profiles retained for comparison
+
+```bash
+groken capabilities
+groken inspect-app
+groken inspect-app --fail-on-drift
+```
+
+Command names and critical fingerprints are verified. Request/reply schema
+coverage is intentionally marked partial where the app has not supplied enough
+runtime evidence; those operations remain inventory-only rather than being
+guessed. Full details:
+[`docs/capabilities-0.30.0.md`](docs/capabilities-0.30.0.md).
+
+## Security model
+
+- Tokens, Bot binding, grants, and worker state use owner-only local files.
+- Groken never sends local credentials through Bot chat.
+- Password, 2FA, CAPTCHA, and macOS security prompts require human takeover.
+- Plugin calls and other mutations require explicit confirmation.
+- HTTP/SSE MCP transports have no built-in authentication; keep them on
+  loopback or place them behind an authenticated proxy.
+- Native execution is remote execution, not an OS sandbox; review the command,
+  working directory, and timeout.
+- A transport failure during a non-idempotent mutation can leave an unknown
+  outcome. Inspect state before retrying.
+- Groken does not patch the official app or bypass account, provider, plugin,
+  or human-confirmation controls.
+
+## Troubleshooting
+
+| Symptom | First action |
+| --- | --- |
+| Sign-in or token error | `groken login`, then `groken doctor` |
+| Gateway unavailable | run `groken doctor`; retry after sandbox recovery |
+| App update changed commands | `groken inspect-app --fail-on-drift` |
+| Harness cannot see tools | re-run `groken install TARGET`, then restart it |
+| Bot computer does not open | retry `groken connect`; override display only when known |
+| Restore needs manual work | complete prompts, then run `groken bot env restore --retry-manual` |
+| Need the first-run commands | `groken guide` |
+
+`groken doctor` continues through diagnostic tiers so one failure does not hide
+later evidence.
+
+## Uninstall
+
+```bash
+groken uninstall --all
+groken service uninstall
+rm -rf ~/.config/groken       # optional: removes local credentials and state
+uv tool uninstall groken
+```
+
+Remove the Hermes `mcp_servers.groken` block manually if installed. Deleting
+`~/.config/groken` is irreversible and signs the local machine out.
+
+## Development
+
+```bash
+uv venv .venv
+uv pip install -p .venv/bin/python -e ".[mcp,share,worker]"
 .venv/bin/python -m pytest tests/
+.venv/bin/ruff check .
+basedpyright --level error
+uv build
 ```
 
-Covers: checksum vs JS reference, Connect envelope codec (round-trip, split
-chunks, error frames), request headers/body shape, 401 -> refresh -> retry,
-stream wire format.
+Provider traffic is mocked in the test suite. Follow
+[`docs/provider-e2e-runbook.md`](docs/provider-e2e-runbook.md) when validating a
+real account boundary; do not describe local relay or mock results as provider
+E2E proof.
 
-## Notes
+## Documentation
 
-- Tokens live at `~/.config/groken/tokens.json` (0600); bot binding in `~/.config/groken/config.json`.
-- Env overrides: `SAND_BACKEND_URL`, `SAND_CLIENT_VERSION`, `GROKEN_BOT_NAME`.
-- Undocumented internal API: schema drift is handled by re-extracting from the
-  newest app bundle (`app.asar`), the same way this client was built.
+- [Grok Bot 0.30 capability map](docs/capabilities-0.30.0.md)
+- [Native operation plane](docs/native-operation-plane.md)
+- [Remote worker runbook](docs/direct-worker-runbook.md)
+- [Provider E2E runbook](docs/provider-e2e-runbook.md)
+- [Guardrail design research](docs/painpoints-2026-08-19.md)
+- [Installable agent skill](skill/SKILL.md)
+
+Run `groken --help` or any subcommand with `--help` for the current command
+surface.
